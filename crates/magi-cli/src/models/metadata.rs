@@ -4,7 +4,7 @@ use magi_proto::ask::Pricing;
 
 #[must_use]
 pub(crate) fn provider_name(choice: &magi_proto::ModelChoice) -> &str {
-    choice
+    let raw = choice
         .provider
         .as_deref()
         .filter(|provider| !provider.is_empty())
@@ -13,7 +13,12 @@ pub(crate) fn provider_name(choice: &magi_proto::ModelChoice) -> &str {
                 .name
                 .split_once('/')
                 .map_or("", |(provider, _)| provider)
-        })
+        });
+    if raw == "decisions" {
+        "openrouter"
+    } else {
+        raw
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

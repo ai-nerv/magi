@@ -22,6 +22,7 @@ pub struct Login {
     accounts: Vec<Account>,
     selected: String,
     page: Page,
+    tab: usize,
     notice: String,
     sequence: u64,
     pending: Option<u64>,
@@ -42,6 +43,13 @@ impl App {
         }
     }
 
+    pub fn set_login_tab(&mut self, tab: usize) {
+        self.login.tab = tab;
+        if self.pane_titled("login") {
+            self.show_login();
+        }
+    }
+
     pub fn open_logins(&mut self) -> Option<UiCommand> {
         if self.view_only {
             self.refuse_view_only();
@@ -49,6 +57,7 @@ impl App {
         }
         self.overlay = None;
         self.login.selected.clear();
+        self.login.tab = 0;
         Some(self.login_request(Request::List))
     }
 
@@ -104,11 +113,12 @@ impl App {
                 active: active == Some(choice.name.as_str()),
             })
             .collect();
-        self.pane = Some(magi_tui::login::pane_with_models(
+        self.pane = Some(magi_tui::login::pane_tabbed(
             view,
             &self.login.notice,
             width,
             &models,
+            self.login.tab,
         ));
     }
 
@@ -296,7 +306,7 @@ impl App {
     }
 
     pub fn login_cleanup(&mut self) -> Option<UiCommand> {
-        if matches!(self.login.page, Page::Key(_)) {
+        if self.pane.is_none() && matches!(self.login.page, Page::Key(_)) {
             self.show_login();
             return None;
         }

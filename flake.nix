@@ -262,6 +262,24 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";
+
+          # On NixOS with auto-optimise-store, /nix/store/.../bin/bwrap has nlink=2 via
+          # /nix/store/.links. Stage a read-only nlink=1 copy so older casper binaries still
+          # accept the devShell launcher without disabling the jail.
+          shellHook = ''
+            if bwrap_bin=$(command -v bwrap 2>/dev/null); then
+              if [ "$(stat -c %h "$bwrap_bin" 2>/dev/null || echo 1)" != "1" ]; then
+                _magi_bwrap_dir="''${XDG_RUNTIME_DIR:-/tmp}/magi-dev-bwrap"
+                mkdir -p "$_magi_bwrap_dir"
+                if [ ! -f "$_magi_bwrap_dir/bwrap" ] || ! cmp -s "$bwrap_bin" "$_magi_bwrap_dir/bwrap"; then
+                  rm -f "$_magi_bwrap_dir/bwrap"
+                  cp "$bwrap_bin" "$_magi_bwrap_dir/bwrap"
+                  chmod 555 "$_magi_bwrap_dir/bwrap"
+                fi
+                export PATH="$_magi_bwrap_dir:$PATH"
+              fi
+            fi
+          '';
         };
       }
     ));

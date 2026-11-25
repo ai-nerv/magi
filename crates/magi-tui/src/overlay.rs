@@ -28,6 +28,14 @@ impl Overlay {
         }
     }
 
+    #[must_use]
+    pub fn render_in(&self, width: u16, max_rows: usize) -> Vec<Line<'static>> {
+        match self {
+            Self::Picker(picker) => crate::picker::render_in(picker, width, Some(max_rows)),
+            Self::Completion(completion) => crate::complete::render(completion, width),
+        }
+    }
+
     pub fn picker(&mut self) -> Option<&mut Picker> {
         match self {
             Self::Picker(picker) => Some(picker),

@@ -151,6 +151,15 @@ impl Picker {
         None
     }
 
+    /// Try to take the choice at `index` directly (for numbered decision prompts).
+    pub fn take_at(&mut self, index: usize) -> Option<String> {
+        if index >= self.choices.len() {
+            return None;
+        }
+        self.selected = index;
+        self.take()
+    }
+
     /// What has been typed so far.
     #[must_use]
     pub fn query(&self) -> &str {
@@ -300,6 +309,21 @@ impl Picker {
             .filter(|hint| !hint.is_empty())
     }
 
+    /// Present this picker as a structured decision prompt rather than a searchable list.
+    pub fn decision(&mut self, decision: Decision) {
+        self.presentation.get_or_insert_default().decision = Some(decision);
+    }
+
+    #[must_use]
+    pub fn quick_keys(&self) -> bool {
+        self.decision_config()
+            .is_some_and(|decision| decision.quick_keys)
+    }
+
+    pub(super) fn decision_config(&self) -> Option<&Decision> {
+        self.presentation.as_deref()?.decision.as_ref()
+    }
+
     /// Rows this needs on screen, heading included.
     #[must_use]
     pub fn height(&self) -> u16 {
@@ -381,10 +405,12 @@ impl Picker {
     }
 }
 
+mod decision;
 mod table;
 mod view;
 
-pub use view::render;
+pub use decision::{Advice, Decision, Subject, Tone};
+pub use view::{render, render_in};
 
 /// Rows shown at once, as `magi.ui.menu_rows` left it.
 fn max_visible() -> usize {

@@ -457,6 +457,10 @@ impl App {
                 self.show_memory(tab);
                 Some(self.memory_ask(tab))
             }
+            "login" => {
+                self.set_login_tab(tab);
+                Some(None)
+            }
             _ => {
                 self.pane.as_mut()?.tab = tab;
                 Some(None)
@@ -476,13 +480,14 @@ impl App {
     pub fn step_memory(&mut self, forward: bool) -> Option<magi_proto::UiCommand> {
         let open = self.pane.as_mut()?;
         let title = open.title.clone();
-        if !matches!(title.as_str(), MEMORY | CREW | TOOLING) || !open.step_tab(forward) {
+        if !matches!(title.as_str(), MEMORY | CREW | TOOLING | "login") || !open.step_tab(forward) {
             return None;
         }
         let tab = open.tab;
         match title.as_str() {
             CREW => self.show_crew(tab),
             TOOLING => self.show_tooling(tab),
+            "login" => self.set_login_tab(tab),
             _ => self.show_memory(tab),
         }
         (title == MEMORY).then(|| self.memory_ask(tab)).flatten()

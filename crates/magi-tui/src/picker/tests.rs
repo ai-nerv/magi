@@ -670,4 +670,72 @@ mod fluidity_tests {
             "heading plus tabs stay visible on empty match"
         );
     }
+
+    #[test]
+    fn decision_prompt_keeps_choices_visible_under_long_commands_and_narrow_widths() {
+        let mut picker = Picker::new(
+            "shell · run",
+            vec![
+                Choice {
+                    value: "Allow once".into(),
+                    detail: "this call only".into(),
+                    ready: true,
+                },
+                Choice {
+                    value: "Allow `bash`".into(),
+                    detail: "any bash command · this session".into(),
+                    ready: true,
+                },
+                Choice {
+                    value: "Deny".into(),
+                    detail: "refuse this call".into(),
+                    ready: true,
+                },
+            ],
+            None,
+        );
+        let script = (1..=20)
+            .map(|n| format!("echo line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut tones = std::collections::BTreeMap::new();
+        tones.insert("Deny".into(), Tone::Danger);
+        picker.decision(Decision {
+            label: "Permission".into(),
+            subject: Some(Subject::Command(script)),
+            advice: None,
+            queue: Some("+2 waiting".into()),
+            quick_keys: true,
+            escape_hint: Some("Esc deny".into()),
+            tones,
+        });
+        for width in [12, 48, 80, 120] {
+            let rendered = render_in(&picker, width, Some(10));
+            assert!(rendered.len() <= 10, "width {width}: {}", rendered.len());
+            assert!(
+                rendered
+                    .iter()
+                    .all(|line| line.width() <= usize::from(width)),
+                "overflow at width {width}"
+            );
+            let joined = rendered
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let want_first = if width >= 24 { "Allow once" } else { "Allow" };
+            assert!(
+                joined.contains(want_first) && joined.contains("Deny"),
+                "choices pushed off screen at width {width}:\n{joined}"
+            );
+        }
+        let normal = render_in(&picker, 80, Some(10))
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(normal.contains("more line"), "{normal}");
+        assert!(normal.contains("(+2 waiting)"), "{normal}");
+        assert!(normal.contains("1  Allow once"), "{normal}");
+    }
 }

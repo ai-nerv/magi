@@ -481,3 +481,83 @@ fn picker_arrows_switch_tabs_and_ctrl_a_toggles_locked_models() {
         Action::ToggleAll
     );
 }
+
+#[test]
+fn decision_picker_supports_number_keys_jk_and_ignores_stray_typing() {
+    let mut editor = Editor::new();
+    let make = || {
+        let mut picker = magi_tui::picker::Picker::new(
+            "shell · run",
+            vec![
+                magi_tui::picker::Choice {
+                    value: "Allow once".into(),
+                    detail: "this call only".into(),
+                    ready: true,
+                },
+                magi_tui::picker::Choice {
+                    value: "Deny".into(),
+                    detail: "refuse this call".into(),
+                    ready: true,
+                },
+            ],
+            None,
+        );
+        picker.decision(magi_tui::picker::Decision {
+            label: "Permission".into(),
+            quick_keys: true,
+            ..Default::default()
+        });
+        Some(picker.into())
+    };
+    let mut overlay = make();
+    // Stray letters do not fuzzy-filter choices away.
+    assert_eq!(
+        handle(
+            press(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut editor,
+            &mut overlay,
+            &mut None,
+            20,
+            true,
+            &mut typing(),
+        ),
+        Action::Accepted
+    );
+    assert_eq!(
+        overlay
+            .as_ref()
+            .and_then(|o| o.list())
+            .map(|p| p.choices.len()),
+        Some(2)
+    );
+    // j/k move selection cleanly.
+    handle(
+        press(KeyCode::Char('j'), KeyModifiers::NONE),
+        &mut editor,
+        &mut overlay,
+        &mut None,
+        20,
+        true,
+        &mut typing(),
+    );
+    assert_eq!(
+        overlay
+            .as_ref()
+            .and_then(|o| o.list())
+            .and_then(|p| p.current())
+            .map(|c| c.value.as_str()),
+        Some("Deny")
+    );
+    // Pressing 1 immediately takes option 1.
+    let chosen = handle(
+        press(KeyCode::Char('1'), KeyModifiers::NONE),
+        &mut editor,
+        &mut overlay,
+        &mut None,
+        20,
+        true,
+        &mut typing(),
+    );
+    assert_eq!(chosen, Action::Chose("Allow once".into()));
+    assert!(overlay.is_none());
+}

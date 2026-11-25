@@ -6,6 +6,15 @@ use ratatui::text::Line;
 /// Draw the list.
 #[must_use]
 pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
+    render_in(picker, width, None)
+}
+
+/// Draw the list within an optional vertical row budget.
+#[must_use]
+pub fn render_in(picker: &Picker, width: u16, max_rows: Option<usize>) -> Vec<Line<'static>> {
+    if let Some(decision) = picker.decision_config() {
+        return super::decision::render(picker, decision, width, max_rows);
+    }
     let window = picker.window();
     let hint = picker
         .hint_text()

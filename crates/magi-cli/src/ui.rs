@@ -83,7 +83,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         None => app
             .overlay
             .as_ref()
-            .map(|open| open.render(area.width.saturating_sub(metric::gutter() + 1)))
+            .map(|open| open.render_in(area.width.saturating_sub(metric::gutter() + 1), room))
             .unwrap_or_default(),
     };
     menu.truncate(room);
