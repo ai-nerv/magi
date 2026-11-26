@@ -74,6 +74,8 @@ pub struct Tooling {
     pub configure: String,
     /// The roles the configuration describes, which `spawn` offers a child by name.
     pub kinds: Vec<crate::builtin::Kind>,
+    /// When true, `spawn` only permits roles explicitly listed in [`Self::kinds`].
+    pub strict_kinds: bool,
 }
 
 impl Default for Tooling {
@@ -84,6 +86,7 @@ impl Default for Tooling {
             pin: None,
             configure: String::new(),
             kinds: Vec::new(),
+            strict_kinds: false,
         }
     }
 }

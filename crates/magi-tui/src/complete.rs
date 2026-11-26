@@ -86,6 +86,10 @@ pub fn commands() -> Vec<Candidate> {
         (":agents", "the run's agents, as a tree"),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
+        (
+            ":profile",
+            "switch active session profile, or :profile <name>",
+        ),
         (":mode", "switch who is asked: ask, edits, auto or locked"),
         (
             ":permission",

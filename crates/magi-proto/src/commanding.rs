@@ -103,6 +103,9 @@ pub enum UiCommand {
     SetMode {
         mode: String,
     },
+    SetProfile {
+        name: String,
+    },
     /// How sure a second model has to be for its verdict to be acted on.
     SetUnsure {
         band: (f64, f64),
@@ -203,6 +206,7 @@ impl UiCommand {
             Self::SelectModel { .. } => "select_model",
             Self::SetThinking { .. } => "set_thinking",
             Self::SetMode { .. } => "set_mode",
+            Self::SetProfile { .. } => "set_profile",
             Self::SetUnsure { .. } => "set_unsure",
             Self::SetProvider { .. } => "set_provider",
             Self::Permit { .. } => "permit",

@@ -228,6 +228,8 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: std::collections::BTreeMap::new(),
         helpers: Default::default(),
         deciders: Vec::new(),

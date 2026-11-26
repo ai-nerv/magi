@@ -250,6 +250,8 @@ fn backend(root: &Path, mind: &str, url: &str, zai: bool) -> Result<Backend> {
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: Default::default(),
         helpers: Default::default(),
         deciders: Vec::new(),

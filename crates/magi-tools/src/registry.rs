@@ -77,6 +77,7 @@ pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
     watching: crate::watching::Watchers,
     hooks: crate::hooking::Hooks,
+    filter: crate::ToolFilter,
     /// Deferred tools a `tools` lookup has made available, for the rest of the session.
     unlocked: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
@@ -96,6 +97,11 @@ impl Registry {
     /// Register a pre/post tool hook around tool execution.
     pub fn hook(&mut self, hook: Box<dyn crate::hooking::Hook>) {
         self.hooks.add(hook);
+    }
+
+    /// Restrict which registered tools are visible and callable.
+    pub fn set_filter(&mut self, filter: crate::ToolFilter) {
+        self.filter = filter;
     }
 
     /// The handle the watchers hang off, for whoever else has something to report — the permission
@@ -161,7 +167,10 @@ impl Registry {
         let unlocked = self.unlocked.borrow();
         self.tools
             .values()
-            .filter(|tool| !tool.deferred() || unlocked.contains(tool.name()))
+            .filter(|tool| {
+                self.filter.allows(tool.name())
+                    && (!tool.deferred() || unlocked.contains(tool.name()))
+            })
             .map(|tool| magi_model::Tool {
                 strict: tool.strict(),
                 name: tool.name().to_owned(),
@@ -183,6 +192,9 @@ impl Registry {
         ops: &dyn Ops,
         cancel: &dyn Cancel,
     ) -> Output {
+        if let Some(refused) = self.filter.check(name) {
+            return refused;
+        }
         match self.get(name) {
             Some(tool) => {
                 // Checked here rather than by each tool, because this is where the schema is: a
@@ -265,6 +277,9 @@ impl Registry {
     /// What overlaps is the *waiting*, which is [`Registry::finish`].
     #[must_use]
     pub fn prepare(&self, name: &str, arguments: &str, ops: &dyn Ops) -> Prepared {
+        if let Some(refused) = self.filter.check(name) {
+            return Prepared::answered(name, refused);
+        }
         let Some(tool) = self.get(name) else {
             let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
             return Prepared::answered(

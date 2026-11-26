@@ -210,6 +210,8 @@ fn backend(mind: &Mind, cwd: &Path) -> Backend {
         confine: false,
         isolate: true,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: Default::default(),
         helpers: Default::default(),
         deciders: Vec::new(),

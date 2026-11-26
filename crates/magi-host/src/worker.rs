@@ -39,6 +39,13 @@ impl Worker {
         Some(backend)
     }
 
+    pub(crate) fn held_grants(&self) -> Vec<magi_proto::permit::Grant> {
+        self.granted
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn image_profile(&self) -> Option<(&str, Option<&magi_model::ImageResize>)> {
         self.reporting
             .as_ref()
@@ -100,7 +107,7 @@ impl Worker {
 
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
             // The same sequence `magi tools` lists, from the one place that knows it.
-            let (registry, _supplied) = magi_lua::tool::assemble(
+            let (mut registry, _supplied) = magi_lua::tool::assemble(
                 std::rc::Rc::clone(&engine),
                 std::sync::Arc::clone(&asks),
                 std::sync::Arc::clone(&holds),
@@ -108,6 +115,7 @@ impl Worker {
                 &backend.environ,
                 &backend.tooling,
             );
+            registry.set_filter(backend.tool_filter.clone());
             // Gated when there is somebody to ask; the ledger starts with what the config granted.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {
                 // `confine` is honoured here too. The arm used to be `(Some(approver), _)`, which
@@ -115,7 +123,10 @@ impl Worker {
                 (Some(approver), confine) => std::rc::Rc::new(
                     magi_tools::ops::Real::gated(
                         backend.cwd.clone(),
-                        magi_tools::permit::Ledger::with(backend.grants.clone()),
+                        magi_tools::permit::Ledger::with_profile(
+                            backend.grants.clone(),
+                            backend.profile_grants.clone(),
+                        ),
                         std::sync::Arc::clone(approver),
                     )
                     .confining(confine)

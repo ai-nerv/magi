@@ -172,6 +172,8 @@ async fn resume_binding(name: &str, target: &str, cursors: [u64; 2], identity: b
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: Default::default(),
         helpers: Default::default(),
         deciders: Vec::new(),

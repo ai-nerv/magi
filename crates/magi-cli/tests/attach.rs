@@ -224,7 +224,8 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             }
             HarnessEvent::Refused { .. }
             | HarnessEvent::ModelChanged { .. }
-            | HarnessEvent::ModeChanged { .. } => {}
+            | HarnessEvent::ModeChanged { .. }
+            | HarnessEvent::ProfileChanged { .. } => {}
             HarnessEvent::MessageArrived {
                 who,
                 kin,

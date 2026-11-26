@@ -172,6 +172,8 @@ fn backend(mind: &Mind, root: &Path, mode: &str) -> Backend {
         system: None,
         confine: mode == "confined",
         isolate: false,
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         grants: if matches!(mode, "standing" | "override") {
             vec![Grant {
                 verb: "write".into(),

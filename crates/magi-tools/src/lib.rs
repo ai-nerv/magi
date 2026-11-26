@@ -11,6 +11,7 @@ pub mod command;
 pub mod environ;
 pub mod family;
 pub mod files;
+pub mod filtering;
 pub mod holding;
 pub mod hooking;
 pub mod masking;
@@ -26,6 +27,7 @@ pub mod supplier;
 pub mod watching;
 
 pub use cancel::{Cancel, Uncancelled};
+pub use filtering::ToolFilter;
 pub use hooking::{After, Before, Hook, Hooks};
 pub use ops::Ops;
 pub use registry::{Prepared, Registry, Sending, Tool};

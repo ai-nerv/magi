@@ -65,6 +65,9 @@ pub struct Session {
     /// Who is asked about what no rule covers, and on what terms; the gate keeps its own copy of
     /// what it acts on, and this is what every screen is shown.
     pub judging: magi_proto::judging::Judging,
+    /// Currently active higher-level profile name, and available `(name, summary)` choices.
+    profile: Option<String>,
+    profiles: Vec<(String, String)>,
 }
 
 impl Session {
@@ -111,6 +114,8 @@ impl Session {
             helpers_spent: std::sync::Arc::default(),
             unrecorded: false,
             judging: magi_proto::judging::Judging::default(),
+            profile: None,
+            profiles: Vec::new(),
         }
     }
 
@@ -533,6 +538,38 @@ impl Session {
             cursor: self.cursor(),
             model: self.model.clone(),
             thinking: Some(self.thinking.clone()),
+        });
+    }
+
+    pub fn set_profiles(&mut self, profiles: Vec<(String, String)>) {
+        self.profiles = profiles;
+    }
+
+    pub fn set_profile(&mut self, profile: Option<String>) {
+        self.profile = profile;
+    }
+
+    #[must_use]
+    pub fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+
+    #[must_use]
+    pub fn profile_event(&self) -> Option<HarnessEvent> {
+        (!self.profiles.is_empty() || self.profile.is_some()).then(|| {
+            HarnessEvent::ProfileChanged {
+                cursor: self.cursor(),
+                profile: self.profile.clone(),
+                profiles: self.profiles.clone(),
+            }
+        })
+    }
+
+    pub fn announce_profile(&self) {
+        let _ = self.events.send(HarnessEvent::ProfileChanged {
+            cursor: self.cursor(),
+            profile: self.profile.clone(),
+            profiles: self.profiles.clone(),
         });
     }
 

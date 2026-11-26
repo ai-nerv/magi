@@ -144,6 +144,7 @@ impl Recording {
                 HarnessEvent::Refused { .. }
                 | HarnessEvent::ModelChanged { .. }
                 | HarnessEvent::ModeChanged { .. }
+                | HarnessEvent::ProfileChanged { .. }
                 | HarnessEvent::ContextLaid { .. }
                 | HarnessEvent::RequestAdmitted { .. }
                 | HarnessEvent::CacheFrame { .. }

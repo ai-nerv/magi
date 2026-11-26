@@ -57,6 +57,8 @@ pub struct Standing {
     /// reads it on a blocking thread and `:permission` writes it from the session's.
     low: AtomicU32,
     high: AtomicU32,
+    /// Extra ask/deny rules layered on top of global rules by the active profile.
+    overlay: std::sync::RwLock<Rules>,
 }
 
 impl Standing {
@@ -66,6 +68,22 @@ impl Standing {
         standing.set(mode);
         standing.widen(magi_proto::judging::Judging::band());
         standing
+    }
+
+    /// Replace the active profile's extra ask/deny rule overlay.
+    pub fn set_overlay(&self, rules: Rules) {
+        if let Ok(mut guard) = self.overlay.write() {
+            *guard = rules;
+        }
+    }
+
+    /// Current profile rule overlay.
+    #[must_use]
+    pub fn overlay(&self) -> Rules {
+        self.overlay
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 
     /// How sure a verdict must be to be acted on.
@@ -84,12 +102,29 @@ impl Standing {
     /// What every screen is shown, over what the configuration settled at startup.
     #[must_use]
     pub fn as_shown(&self, over: &magi_proto::judging::Judging) -> magi_proto::judging::Judging {
+        let overlay = self.overlay();
+        let mut denied = over.denied.clone();
+        for rule in &overlay.deny {
+            let text = format!("{} {}", rule.verb, of(&rule.scope));
+            if !denied.contains(&text) {
+                denied.push(text);
+            }
+        }
+        let mut always_asked = over.always_asked.clone();
+        for rule in &overlay.ask {
+            let text = format!("{} {}", rule.verb, of(&rule.scope));
+            if !always_asked.contains(&text) {
+                always_asked.push(text);
+            }
+        }
         magi_proto::judging::Judging {
             mode: self.mode(),
             unsure: self.band(),
             judged: self.judged.load(Ordering::Relaxed),
             refused: self.in_all.load(Ordering::Relaxed),
             in_a_row: self.in_a_row.load(Ordering::Relaxed),
+            denied,
+            always_asked,
             ..over.clone()
         }
     }
@@ -264,10 +299,12 @@ fn rule_matches(rule: &magi_proto::permit::Grant, action: &Action) -> bool {
 
 impl magi_tools::approve::Approver for Judged {
     fn ask(&self, tool: &str, action: &Action) -> Decision {
+        let overlay = self.standing.overlay();
         if let Some(rule) = self
             .rules
             .deny
             .iter()
+            .chain(&overlay.deny)
             .find(|rule| rule_matches(rule, action))
         {
             return observing::decided(PolicyDecision::RuleDenied {}, self.refuse(
@@ -280,7 +317,12 @@ impl magi_tools::approve::Approver for Judged {
                 ),
             ));
         }
-        let ruled = self.rules.ask.iter().any(|rule| rule_matches(rule, action));
+        let ruled = self
+            .rules
+            .ask
+            .iter()
+            .chain(&overlay.ask)
+            .any(|rule| rule_matches(rule, action));
         if ruled || self.unsure(action) {
             let advice = self.judge.judge(tool, action);
             return observing::delegated(
@@ -315,10 +357,13 @@ impl magi_tools::approve::Approver for Judged {
     }
 
     fn overrides(&self, action: &Action) -> bool {
+        let overlay = self.standing.overlay();
         self.rules
             .deny
             .iter()
             .chain(&self.rules.ask)
+            .chain(&overlay.deny)
+            .chain(&overlay.ask)
             .any(|rule| rule_matches(rule, action))
             || self.unsure(action)
     }
@@ -331,12 +376,15 @@ impl Judged {
         let Action::Run { command, .. } = action else {
             return false;
         };
+        let overlay = self.standing.overlay();
         magi_tools::bash::is_ambiguous(command)
             && self
                 .rules
                 .deny
                 .iter()
                 .chain(&self.rules.ask)
+                .chain(&overlay.deny)
+                .chain(&overlay.ask)
                 .any(|rule| rule.verb == "run" && matches!(rule.scope, Scope::Program { .. }))
     }
 }
@@ -509,6 +557,30 @@ async fn told(session: &tokio::sync::Mutex<crate::session::Session>, standing: &
         .send(magi_proto::HarnessEvent::ModeChanged { cursor, judging });
 }
 
+/// Apply a profile's permission overlay and optional mode override, recomputing what screens show.
+pub async fn apply_profile(
+    session: &tokio::sync::Mutex<crate::session::Session>,
+    standing: &Standing,
+    catalog: &crate::catalog::Catalog,
+    mode: Option<Mode>,
+    overlay: Rules,
+) {
+    standing.set_overlay(overlay);
+    if let Some(mode) = mode {
+        standing.set(mode);
+    }
+    let described = described_by(catalog, standing);
+    let mut held = session.lock().await;
+    held.judging = described.clone();
+    let cursor = held.cursor();
+    let _ = held
+        .publisher()
+        .send(magi_proto::HarnessEvent::ModeChanged {
+            cursor,
+            judging: described,
+        });
+}
+
 /// What a configuration settled before anything ran, as the gate now stands.
 pub(crate) fn described_by(
     catalog: &crate::catalog::Catalog,
@@ -526,7 +598,8 @@ fn described(catalog: &crate::catalog::Catalog) -> magi_proto::judging::Judging 
             .map(|rule| format!("{} {}", rule.verb, of(&rule.scope)))
             .collect()
     };
-    let model = catalog.helpers.roles.get("safety").cloned();
+    let helpers = catalog.effective_helpers();
+    let model = helpers.roles.get("safety").cloned();
     let kind = match &model {
         None => Kind::None,
         Some(model)

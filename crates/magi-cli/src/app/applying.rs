@@ -258,6 +258,12 @@ impl App {
                 self.judging = judging;
                 self.refresh_views();
             }
+            HarnessEvent::ProfileChanged {
+                profile, profiles, ..
+            } => {
+                self.profile = profile;
+                self.profiles = profiles;
+            }
             HarnessEvent::ModelChanged {
                 model, thinking, ..
             } => {

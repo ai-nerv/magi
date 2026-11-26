@@ -56,6 +56,8 @@ async fn late_helper_is_durable_only_in_a_before_b_is_published() {
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: Default::default(),
         helpers: Default::default(),
         deciders: Vec::new(),

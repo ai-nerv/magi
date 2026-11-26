@@ -16,6 +16,7 @@ pub struct Named<'a> {
     pub run: Option<&'a str>,
     pub agent: Option<&'a str>,
     pub load: Option<&'a str>,
+    pub profile: Option<&'a str>,
 }
 
 /// What a headless child reports from: the session's status, and what each model has cost it.
@@ -38,6 +39,7 @@ pub async fn start(
         run,
         agent,
         load,
+        profile,
     } = named;
     let required = load.is_some();
     let resume = load.map(|id| Some(id.to_owned())).or(resume);
@@ -105,11 +107,18 @@ pub async fn start(
 
     // Asked once and handed to the session; melchior owns the catalog.
     let mut catalog = match loaded {
-        Some(loaded) => crate::config::catalog(
+        Some(loaded) => crate::config::catalog_with_profile(
             loaded,
             magi_host::broker::cards(&crate::config::mind(loaded)).await,
-        ),
-        None => magi_host::catalog::Catalog::empty(),
+            profile,
+        )
+        .map_err(anyhow::Error::msg)?,
+        None => {
+            if let Some(name) = profile {
+                anyhow::bail!("unknown profile {name:?}: no configuration is loaded");
+            }
+            magi_host::catalog::Catalog::empty()
+        }
     };
     let mut backend = crate::config::backend(&catalog);
     let mut environ = environ.clone();

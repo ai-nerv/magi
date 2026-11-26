@@ -90,6 +90,8 @@ async fn fixture(name: &str, mind: &Mind, child: bool, broken: bool) -> Fixture 
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ,
         helpers: Default::default(),
         deciders: Vec::new(),

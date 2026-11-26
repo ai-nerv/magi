@@ -350,6 +350,12 @@ pub enum HarnessEvent {
         cursor: Cursor,
         judging: crate::judging::Judging,
     },
+    ProfileChanged {
+        cursor: Cursor,
+        profile: Option<String>,
+        #[serde(default)]
+        profiles: Vec<(String, String)>,
+    },
     ModelChanged {
         cursor: Cursor,
         model: Option<ModelInfo>,
@@ -536,6 +542,7 @@ impl HarnessEvent {
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
             | Self::ModeChanged { cursor, .. }
+            | Self::ProfileChanged { cursor, .. }
             | Self::Branched { cursor, .. }
             | Self::Noticed { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,

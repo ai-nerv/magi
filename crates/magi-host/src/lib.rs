@@ -24,6 +24,7 @@ pub mod knowing;
 pub mod laying;
 pub mod paths;
 mod preparing;
+pub mod profiles;
 pub mod remember;
 mod reporting;
 mod resuming;
@@ -208,11 +209,20 @@ async fn serve_prepared(
     let explicit_memory = balthasar.is_some() || prepared.is_some();
     // Told once, here, because this is the only place that knows both.
     session.set_choices(catalog.choices());
+    session.set_profiles(catalog.profile_summaries());
+    session.set_profile(catalog.active_profile.clone());
     session.run_helpers_on(tokio::runtime::Handle::current());
     session.set_model(backend.as_ref().map(|backend| magi_proto::ModelInfo {
         name: backend.model.clone(),
         context_window: backend.context_window.unwrap_or(0),
     }));
+    if let Some(thinking) = backend
+        .as_ref()
+        .and_then(|b| b.wants.thinking)
+        .map(magi_model::ThinkingLevel::as_str)
+    {
+        session.set_thinking(thinking.to_owned());
+    }
     let session = Arc::new(Mutex::new(session));
     // Turns run on the worker's own thread because a protocol lives in a Lua VM; a session with no
     // backend has no worker. Behind a lock because `/model` replaces it — the worker owns a VM
@@ -331,6 +341,28 @@ async fn serve_prepared(
     }
 
     let mut catalog = catalog;
+    let mut backend = backend;
+    let preload_names: Vec<String> = catalog
+        .active_profile_ref()
+        .map(|p| p.skills_preload.clone())
+        .unwrap_or_else(|| {
+            catalog
+                .preloaded_skills
+                .iter()
+                .filter(|(_, body)| body.is_empty())
+                .map(|(name, _)| name.clone())
+                .collect()
+        });
+    if !preload_names.is_empty() {
+        let (preloaded, warnings) = switching::preload_skills(&catalog, &preload_names).await;
+        for warning in warnings {
+            magi_model::noted!("profile preload: {warning}");
+        }
+        catalog.preloaded_skills = preloaded;
+        if let Some(active) = backend.as_mut() {
+            active.system = catalog.effective_system();
+        }
+    }
     let served = tokio::time::timeout(GREETING, async {
         let mut open = scribe.lock().await;
         match open.as_mut() {
@@ -485,7 +517,7 @@ mod serving;
 use serving::{Served, connection, controller_key};
 #[path = "switching.rs"]
 mod switching;
-use switching::{switch_model, switch_provider, switch_thinking};
+use switching::{switch_model, switch_profile, switch_provider, switch_thinking};
 // Re-exported: it answers "why is nothing configured", which the UI asks at attach.
 pub use switching::no_model;
 #[path = "turning.rs"]
@@ -529,7 +561,14 @@ async fn guard(
     catalog: &crate::catalog::Catalog,
     session: &tokio::sync::Mutex<crate::session::Session>,
 ) -> crate::asking::Person {
-    let standing = Arc::new(judging::Standing::starting(catalog.mode));
+    let initial_mode = catalog
+        .active_profile_ref()
+        .and_then(|profile| profile.mode)
+        .unwrap_or(catalog.mode);
+    let standing = Arc::new(judging::Standing::starting(initial_mode));
+    if let Some(profile) = catalog.active_profile_ref() {
+        standing.set_overlay(profile.judging_rules());
+    }
     let events = {
         let mut held = session.lock().await;
         held.judging = judging::described_by(catalog, &standing);

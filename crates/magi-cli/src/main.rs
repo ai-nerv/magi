@@ -90,6 +90,10 @@ struct Cli {
     #[arg(long, value_name = "NAME")]
     role: Option<String>,
 
+    /// Higher-level session profile from `magi.profiles` or `~/.config/magi/profiles/*.md`.
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+
     /// What that role means, in a sentence a coordinator can route by.
     #[arg(long, value_name = "TEXT")]
     role_description: Option<String>,
@@ -246,6 +250,7 @@ fn execute() -> Result<()> {
             || cli.agent_event_bootstrap
             || cli.event_child
             || cli.role.is_some()
+            || cli.profile.is_some()
             || cli.role_description.is_some()
             || cli.attach.is_some()
             || cli.view_only
@@ -393,6 +398,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     run: opening.run.as_deref(),
                     agent: opening.agent.as_deref(),
                     load: opening.load.as_deref(),
+                    profile: cli.profile.as_deref(),
                 },
             )
             .await
@@ -447,6 +453,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     run: opening.run.as_deref(),
                     agent: opening.agent.as_deref(),
                     load: opening.load.as_deref(),
+                    profile: cli.profile.as_deref(),
                 },
             )
             .await
@@ -545,6 +552,7 @@ fn unknown_verb(cli: &Cli) -> Option<&str> {
         && !cli.headless
         && cli.tied.is_none()
         && cli.role.is_none()
+        && cli.profile.is_none()
         && cli.role_description.is_none()
         && cli.socket.is_none();
     (bare && verb_shaped(word)).then_some(word)

@@ -22,7 +22,7 @@ impl Response {
     }
 }
 
-pub(super) async fn discover(
+pub(crate) async fn discover(
     catalog: &Catalog,
     cancel: &Cancel,
 ) -> Result<(Client, crate::skills::Catalog), String> {
@@ -68,10 +68,14 @@ pub(super) fn warnings(catalog: &crate::skills::Catalog) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn response(catalog: &crate::skills::Catalog) -> Result<Response, String> {
+pub(super) fn response(
+    catalog: &crate::skills::Catalog,
+    allow: Option<&[String]>,
+) -> Result<Response, String> {
     let event = HarnessEvent::WorkflowsListed {
         entries: catalog
             .entries()
+            .filter(|entry| crate::profiles::skill_allowed(allow, &entry.name))
             .map(|entry| Summary {
                 name: entry.name.clone(),
                 description: entry

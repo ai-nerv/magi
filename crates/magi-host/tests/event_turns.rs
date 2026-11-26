@@ -57,6 +57,8 @@ fn backend(mind: &Mind, root: &std::path::Path) -> Backend {
         confine: false,
         isolate: false,
         grants: vec![],
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: [
             "HOME",
             "XDG_CONFIG_HOME",

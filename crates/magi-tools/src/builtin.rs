@@ -17,14 +17,20 @@ pub fn install_spawn(
     environ: &std::collections::BTreeMap<String, String>,
     kinds: &[Kind],
 ) {
-    // Whether this session may start children at all: a parent that spawned it without leave set
-    // [`NO_SPAWN`] in its environment, and the flag can only be taken away going down.
+    install_spawn_with(registry, environ, kinds, false);
+}
+
+/// Same as [`install_spawn`], optionally restricting spawned roles to those listed in `kinds`.
+pub fn install_spawn_with(
+    registry: &mut crate::Registry,
+    environ: &std::collections::BTreeMap<String, String>,
+    kinds: &[Kind],
+    strict_kinds: bool,
+) {
     let may_spawn = std::env::var(NO_SPAWN).is_err();
-    registry.register(Box::new(Spawn::new(
-        environ.clone(),
-        may_spawn,
-        kinds.to_vec(),
-    )));
+    let mut spawn = Spawn::new(environ.clone(), may_spawn, kinds.to_vec());
+    spawn.strict_kinds = strict_kinds;
+    registry.register(Box::new(spawn));
 }
 
 /// A role the configuration describes, as `spawn` offers it: what it is called, what it is for, and
@@ -58,6 +64,7 @@ pub struct Spawn {
     may_spawn: bool,
     /// The roles a child can be given by name, and the description that lists them for the model.
     kinds: Vec<Kind>,
+    strict_kinds: bool,
     described: String,
 }
 
@@ -90,6 +97,7 @@ impl Spawn {
             environ,
             may_spawn,
             kinds,
+            strict_kinds: false,
             described,
         }
     }
@@ -189,6 +197,14 @@ impl Tool for Spawn {
         let role = arguments["role"].as_str();
         let prompt = arguments["prompt"].as_str();
         let kind = role.and_then(|role| self.kinds.iter().find(|kind| kind.name == role));
+        if self.strict_kinds && kind.is_none() {
+            let allowed: Vec<&str> = self.kinds.iter().map(|k| k.name.as_str()).collect();
+            return Output::error(format!(
+                "role {:?} is not allowed by the active profile; allowed agents: {}",
+                role.unwrap_or(""),
+                allowed.join(", ")
+            ));
+        }
         // A child started with `delegate: false`, or in a role that may not, may not spawn in turn.
         let delegate = arguments["delegate"].as_bool().unwrap_or(true)
             && kind.is_none_or(|kind| kind.delegate);
@@ -474,6 +490,35 @@ mod tests {
         );
         let bare = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new());
         assert!(!bare.description().contains("Roles"), "no roles, no list");
+    }
+
+    #[test]
+    fn strict_kinds_refuses_roles_not_allowed_by_active_profile() {
+        let dir = scratch("strict-kinds");
+        let ops = crate::ops::Real::new(dir.to_path_buf());
+        let mut spawn = Spawn::new(
+            std::collections::BTreeMap::new(),
+            true,
+            vec![Kind {
+                name: "explorer".to_owned(),
+                description: "reads only".to_owned(),
+                delegate: false,
+            }],
+        );
+        spawn.strict_kinds = true;
+        let refused = spawn.run(
+            &json!({ "role": "builder", "prompt": "edit everything" }),
+            &ops,
+            &crate::Uncancelled,
+        );
+        assert!(refused.is_error);
+        assert!(
+            refused
+                .content
+                .contains("not allowed by the active profile"),
+            "{}",
+            refused.content
+        );
     }
 
     #[test]

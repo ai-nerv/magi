@@ -161,16 +161,20 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     let _drawing = crate::holder::Drawing::attach(&person.surfaces, draws);
 
     // Subscribe before reading state, so an entry committed between the two is not lost in the gap.
-    let (snapshot, backlog, mut live) = {
+    let (snapshot, profile_event, backlog, mut live) = {
         let session = session.lock().await;
         (
             session.snapshot(from),
+            session.profile_event(),
             session.replay(from),
             session.subscribe(),
         )
     };
 
     writer.write(&snapshot).await?;
+    if let Some(event) = profile_event {
+        writer.write(&event).await?;
+    }
     for event in backlog {
         writer.write(&event).await?;
     }
@@ -329,6 +333,13 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     Some(UiCommand::SetMode { mode }) => {
                         let _change = preparing.changing().await;
                         if let Err(message) = judging::switch(&session, &person.standing, &mode).await {
+                            let cursor = session.lock().await.cursor();
+                            writer.write(&HarnessEvent::Refused { cursor, message }).await?;
+                        }
+                    }
+                    Some(UiCommand::SetProfile { name }) => {
+                        let _change = preparing.changing().await;
+                        if let Some(message) = switch_profile(&session, worker, models, person, scribe, &name).await {
                             let cursor = session.lock().await.cursor();
                             writer.write(&HarnessEvent::Refused { cursor, message }).await?;
                         }
