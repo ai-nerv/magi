@@ -148,8 +148,11 @@ do -- the memory role
           args = args or {}
           local positional = {}
           for i, key in ipairs(shape.args) do positional[i] = args[key] end
+          if name == "remember" and magi.session then
+            positional[#shape.args + 1] = { from_session = magi.session }
+          end
           local answer, why =
-            memory.fetch(OURS, name, table.unpack(positional, 1, #shape.args))
+            memory.fetch(OURS, name, table.unpack(positional, 1, #positional))
           if not answer then return { content = tostring(why), is_error = true } end
           -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
           -- and balthasar; putting it in the context would spend tokens on a handle the model

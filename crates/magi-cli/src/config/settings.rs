@@ -46,10 +46,22 @@ pub fn judging(loaded: &Loaded) -> (magi_proto::judging::Mode, magi_host::judgin
         .and_then(|v| v.as_str())
         .and_then(magi_proto::judging::Mode::named)
         .unwrap_or_default();
-    let rules = magi_host::judging::Rules {
-        ask: rules(loaded, "ask"),
-        deny: rules(loaded, "deny"),
-    };
+    let mut ask = rules(loaded, "ask");
+    let mut deny = rules(loaded, "deny");
+    if let Ok(cwd) = std::env::current_dir() {
+        let applied = crate::rules::load_applied(&cwd);
+        for grant in applied.ask {
+            if !ask.contains(&grant) {
+                ask.push(grant);
+            }
+        }
+        for grant in applied.deny {
+            if !deny.contains(&grant) {
+                deny.push(grant);
+            }
+        }
+    }
+    let rules = magi_host::judging::Rules { ask, deny };
     (mode, rules)
 }
 

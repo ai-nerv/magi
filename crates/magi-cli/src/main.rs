@@ -26,6 +26,7 @@ mod offered;
 mod opening;
 mod paths;
 mod print;
+mod rules;
 mod session;
 mod terminal;
 mod tools;
@@ -146,6 +147,18 @@ enum Command {
     ///
     /// A package under `site/pack/` runs once you have said it may, and stops when it changes.
     Acknowledge,
+    /// Compile rules in AGENTS.md / CLAUDE.md into enforced magi.deny and magi.ask grants.
+    Rules {
+        /// Persist the compiled rules for this project under your configuration directory.
+        #[arg(long, conflicts_with_all = ["clear", "lua"])]
+        apply: bool,
+        /// Remove previously applied rules for this project.
+        #[arg(long, conflicts_with_all = ["apply", "lua"])]
+        clear: bool,
+        /// Print compiled rules as a Lua snippet for init.lua instead of applying them.
+        #[arg(long, conflicts_with_all = ["apply", "clear"])]
+        lua: bool,
+    },
     /// Say what a session here would be made of, without starting one.
     Doctor,
     /// List the providers and models magi knows about.
@@ -314,6 +327,10 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
         }
         Some(Command::Acknowledge) => {
             config::acknowledge(how);
+            Ok(())
+        }
+        Some(Command::Rules { apply, clear, lua }) => {
+            rules::run(apply, clear, lua, how);
             Ok(())
         }
         Some(Command::Fork {
