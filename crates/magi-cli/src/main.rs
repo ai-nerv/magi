@@ -483,8 +483,11 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     loaded,
                     &project,
                     started,
-                    cli.attach,
-                    cli.view_only,
+                    driver::Launch {
+                        attach: cli.attach,
+                        view_only: cli.view_only,
+                        profile: cli.profile,
+                    },
                 )
                 .await
             };

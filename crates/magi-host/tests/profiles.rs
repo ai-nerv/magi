@@ -40,11 +40,12 @@ async fn set_profile_switches_model_mode_overlay_and_resets_to_default() {
     let mut catalog = Catalog::empty();
     catalog.cwd = dir.to_path_buf();
     catalog.cards = vec![
-        card("fake/base", true),
+        card("fake/base", false),
         card("fake/plan", true),
         card("fake/exec", true),
     ];
     catalog.chosen = Some("fake/base".into());
+    catalog.base_model = Some("fake/base".into());
     catalog.mode = Mode::Ask;
     catalog.rules.deny = vec![Grant {
         verb: "run".into(),
@@ -73,6 +74,12 @@ async fn set_profile_switches_model_mode_overlay_and_resets_to_default() {
             description: Some("Builds fast".into()),
             model: Some("fake/exec".into()),
             mode: Some(Mode::Edits),
+            ..Profile::default()
+        },
+        Profile {
+            name: "neutral".into(),
+            description: Some("Inherits base model and mode; clamps thinking".into()),
+            thinking: Some("max".into()),
             ..Profile::default()
         },
     ];
@@ -106,7 +113,7 @@ async fn set_profile_switches_model_mode_overlay_and_resets_to_default() {
         } => {
             assert_eq!(profile, None);
             let names: Vec<&str> = profiles.iter().map(|(n, _)| n.as_str()).collect();
-            assert_eq!(names, vec!["planner", "executor"]);
+            assert_eq!(names, vec!["planner", "executor", "neutral"]);
         }
         other => panic!("expected ProfileChanged, got {other:?}"),
     }
@@ -180,6 +187,42 @@ async fn set_profile_switches_model_mode_overlay_and_resets_to_default() {
     assert!(!exec_judging.denied.iter().any(|r| r.contains("write")));
     assert!(exec_judging.denied.iter().any(|r| r.contains("rm")));
     assert_eq!(exec_model.as_deref(), Some("fake/exec"));
+
+    // Switching from executor (mode=edits, model=fake/exec) to neutral (omits mode & model,
+    // requests thinking=max on non-reasoning fake/base) must restore base mode & base model
+    // and clamp thinking cleanly to "off" without leaking executor's overrides.
+    writer
+        .write(&UiCommand::SetProfile {
+            name: "neutral".into(),
+        })
+        .await
+        .expect("set neutral");
+    let mut neutral_mode = None;
+    let mut neutral_model = None;
+    for _ in 0..4 {
+        let ev: HarnessEvent = tokio::time::timeout(Duration::from_secs(5), reader.read())
+            .await
+            .expect("timeout")
+            .expect("event");
+        match ev {
+            HarnessEvent::ModeChanged { judging, .. } => neutral_mode = Some(judging.mode),
+            HarnessEvent::ModelChanged {
+                model, thinking, ..
+            } => neutral_model = Some((model.map(|m| m.name), thinking)),
+            HarnessEvent::ProfileChanged { .. } | HarnessEvent::Noticed { .. } => {}
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+    assert_eq!(
+        neutral_mode,
+        Some(Mode::Ask),
+        "must not leak executor edits mode"
+    );
+    assert_eq!(
+        neutral_model,
+        Some((Some("fake/base".into()), Some("off".into()))),
+        "must restore base model and clamp unsupported max thinking to off"
+    );
 
     // Unknown profile is refused cleanly without changing active profile.
     writer

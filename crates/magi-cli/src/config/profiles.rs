@@ -54,6 +54,22 @@ pub fn all_with_dir(loaded: &Loaded, dir: Option<&Path>) -> Vec<Profile> {
 }
 
 fn parse_lua_profile(name: &str, held: &serde_json::Map<String, Value>) -> Profile {
+    const KNOWN_KEYS: &[&str] = &[
+        "description",
+        "prompt",
+        "model",
+        "thinking",
+        "models",
+        "skills",
+        "permissions",
+        "tools",
+        "agents",
+    ];
+    for key in held.keys() {
+        if !KNOWN_KEYS.contains(&key.as_str()) {
+            eprintln!("magi: profile {name:?} has unknown key {key:?} (ignored)");
+        }
+    }
     let text = |key: &str| {
         held.get(key)
             .and_then(Value::as_str)
@@ -63,34 +79,12 @@ fn parse_lua_profile(name: &str, held: &serde_json::Map<String, Value>) -> Profi
     };
     let mut model = text("model");
     let mut thinking = text("thinking");
-    let mut helpers = BTreeMap::new();
-    if let Some(models) = held.get("models").and_then(Value::as_object) {
-        for (k, v) in models {
-            let Some(val) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
-                continue;
-            };
-            match k.as_str() {
-                "main" => {
-                    if model.is_none() {
-                        model = Some(val.to_owned());
-                    }
-                }
-                "thinking" => {
-                    if thinking.is_none() {
-                        thinking = Some(val.to_owned());
-                    }
-                }
-                role => {
-                    helpers.insert(role.to_owned(), val.to_owned());
-                }
-            }
-        }
-    }
+    let helpers = parse_models(held.get("models"), &mut model, &mut thinking);
     let (skills_preload, skills_allow) = parse_skills(held.get("skills"));
-    let (mode, allow, ask, deny) = parse_permissions(held.get("permissions"));
+    let (mode, allow, ask, deny) = parse_permissions(name, held.get("permissions"));
     let tools = parse_tool_filter(held.get("tools"));
     let agents = held.get("agents").map(|v| parse_string_list(Some(v)));
-    let prompt = parse_prompt(held.get("prompt"));
+    let prompt = parse_prompt(name, held.get("prompt"));
 
     Profile {
         name: name.to_owned(),
@@ -110,7 +104,39 @@ fn parse_lua_profile(name: &str, held: &serde_json::Map<String, Value>) -> Profi
     }
 }
 
-pub(super) fn parse_prompt(value: Option<&Value>) -> Option<String> {
+pub(super) fn parse_models(
+    value: Option<&Value>,
+    model: &mut Option<String>,
+    thinking: &mut Option<String>,
+) -> BTreeMap<String, String> {
+    let mut helpers = BTreeMap::new();
+    let Some(models) = value.and_then(Value::as_object) else {
+        return helpers;
+    };
+    for (k, v) in models {
+        let Some(val) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        match k.as_str() {
+            "main" => {
+                if model.is_none() {
+                    *model = Some(val.to_owned());
+                }
+            }
+            "thinking" => {
+                if thinking.is_none() {
+                    *thinking = Some(val.to_owned());
+                }
+            }
+            role => {
+                helpers.insert(role.to_owned(), val.to_owned());
+            }
+        }
+    }
+    helpers
+}
+
+pub(super) fn parse_prompt(owner: &str, value: Option<&Value>) -> Option<String> {
     match value? {
         Value::String(s) => {
             let trimmed = s.trim();
@@ -119,11 +145,27 @@ pub(super) fn parse_prompt(value: Option<&Value>) -> Option<String> {
         Value::Object(map) => {
             let raw = map.get("file")?.as_str()?.trim();
             let path = expand_tilde(raw);
-            let meta = std::fs::metadata(&path).ok()?;
+            let meta = match std::fs::metadata(&path) {
+                Ok(meta) => meta,
+                Err(why) => {
+                    eprintln!("magi: {owner:?} prompt file {}: {why}", path.display());
+                    return None;
+                }
+            };
             if !meta.is_file() || meta.len() > PROMPT_FILE_MOST {
+                eprintln!(
+                    "magi: {owner:?} prompt file {} is not a regular file within 64 KiB",
+                    path.display()
+                );
                 return None;
             }
-            let contents = std::fs::read_to_string(&path).ok()?;
+            let contents = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(why) => {
+                    eprintln!("magi: {owner:?} prompt file {}: {why}", path.display());
+                    return None;
+                }
+            };
             let trimmed = contents.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         }
@@ -150,18 +192,22 @@ pub(super) fn parse_skills(value: Option<&Value>) -> (Vec<String>, Option<Vec<St
 }
 
 pub(super) fn parse_permissions(
+    owner: &str,
     value: Option<&Value>,
 ) -> (Option<Mode>, Vec<Grant>, Vec<Grant>, Vec<Grant>) {
     let Some(map) = value.and_then(Value::as_object) else {
         return (None, Vec::new(), Vec::new(), Vec::new());
     };
-    let mode = map
-        .get("mode")
-        .and_then(Value::as_str)
-        .and_then(Mode::named);
-    let allow = parse_grant_list(map.get("allow"));
-    let ask = parse_grant_list(map.get("ask"));
-    let deny = parse_grant_list(map.get("deny"));
+    let mode = map.get("mode").and_then(Value::as_str).and_then(|raw| {
+        let parsed = Mode::named(raw);
+        if parsed.is_none() {
+            eprintln!("magi: {owner:?} has unknown permission mode {raw:?} (ignored)");
+        }
+        parsed
+    });
+    let allow = parse_grant_list(owner, "allow", map.get("allow"));
+    let ask = parse_grant_list(owner, "ask", map.get("ask"));
+    let deny = parse_grant_list(owner, "deny", map.get("deny"));
     (mode, allow, ask, deny)
 }
 
@@ -169,15 +215,21 @@ pub(super) fn parse_tool_filter(value: Option<&Value>) -> ToolFilter {
     let Some(map) = value.and_then(Value::as_object) else {
         return ToolFilter::All;
     };
-    if let Some(allow) = map.get("allow") {
-        let set: BTreeSet<String> = parse_string_list(Some(allow)).into_iter().collect();
-        return ToolFilter::Allow(set);
+    match (map.get("allow"), map.get("deny")) {
+        (Some(allow), Some(deny)) => {
+            let mut allowed: BTreeSet<String> =
+                parse_string_list(Some(allow)).into_iter().collect();
+            for blocked in parse_string_list(Some(deny)) {
+                allowed.remove(&blocked);
+            }
+            ToolFilter::Allow(allowed)
+        }
+        (Some(allow), None) => {
+            ToolFilter::Allow(parse_string_list(Some(allow)).into_iter().collect())
+        }
+        (None, Some(deny)) => ToolFilter::Deny(parse_string_list(Some(deny)).into_iter().collect()),
+        (None, None) => ToolFilter::All,
     }
-    if let Some(deny) = map.get("deny") {
-        let set: BTreeSet<String> = parse_string_list(Some(deny)).into_iter().collect();
-        return ToolFilter::Deny(set);
-    }
-    ToolFilter::All
 }
 
 pub(super) fn parse_string_list(value: Option<&Value>) -> Vec<String> {
@@ -198,31 +250,42 @@ pub(super) fn parse_string_list(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-pub(super) fn parse_grant_list(value: Option<&Value>) -> Vec<Grant> {
+pub(super) fn parse_grant_list(owner: &str, field: &str, value: Option<&Value>) -> Vec<Grant> {
     let Some(items) = value.and_then(Value::as_array) else {
         return Vec::new();
     };
     items
         .iter()
         .filter_map(|item| {
-            if let Some(shorthand) = item.as_str() {
-                return parse_grant_shorthand(shorthand);
-            }
-            let verb = item.get("verb")?.as_str()?.to_owned();
-            let scope = if item.get("anything").and_then(Value::as_bool) == Some(true) {
-                Scope::Anything
-            } else if let Some(program) = item.get("program").and_then(Value::as_str) {
-                Scope::Program {
-                    program: program.to_owned(),
-                }
-            } else if let Some(path) = item.get("directory").and_then(Value::as_str) {
-                Scope::Directory {
-                    path: path.to_owned(),
-                }
+            let parsed = if let Some(shorthand) = item.as_str() {
+                parse_grant_shorthand(shorthand)
             } else {
-                return None;
+                let verb = item.get("verb").and_then(Value::as_str)?;
+                let scope = if item.get("anything").and_then(Value::as_bool) == Some(true) {
+                    Scope::Anything
+                } else if let Some(program) = item.get("program").and_then(Value::as_str) {
+                    Scope::Program {
+                        program: program.to_owned(),
+                    }
+                } else if let Some(path) = item.get("directory").and_then(Value::as_str) {
+                    Scope::Directory {
+                        path: path.to_owned(),
+                    }
+                } else {
+                    eprintln!(
+                        "magi: {owner:?} permissions.{field} entry {item} has no scope (ignored)"
+                    );
+                    return None;
+                };
+                Some(Grant {
+                    verb: verb.to_owned(),
+                    scope,
+                })
             };
-            Some(Grant { verb, scope })
+            if parsed.is_none() {
+                eprintln!("magi: {owner:?} permissions.{field} entry {item} is invalid (ignored)");
+            }
+            parsed
         })
         .collect()
 }
@@ -347,5 +410,19 @@ mod tests {
                 name: "architect".into()
             })
         );
+
+        // Switching sessions via SessionSnapshot must clear stale profile state.
+        app.apply(magi_proto::HarnessEvent::SessionSnapshot {
+            cursor: magi_proto::Cursor(2),
+            session: magi_proto::SessionId::new("child"),
+            entries: Vec::new(),
+            status: magi_proto::AgentStatus::Idle,
+            model: None,
+            choices: Vec::new(),
+            thinking: "off".into(),
+            judging: Default::default(),
+        });
+        assert_eq!(app.profile, None);
+        assert!(app.profiles.is_empty());
     }
 }

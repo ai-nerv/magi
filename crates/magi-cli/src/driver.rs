@@ -27,8 +27,7 @@ pub async fn run(
     loaded: Option<crate::config::Loaded>,
     project: &str,
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
-    attach: Option<String>,
-    view_only: bool,
+    launch: Launch,
 ) -> Result<()> {
     // Before anything reads a setting: `colour`, `glyph` and `metric` each hold their table in a
     // `OnceLock` the first read fills with defaults, and `adopt` after that is a no-op.
@@ -37,14 +36,14 @@ pub async fn run(
     }
     let mut app = App::new();
     // A `--attach <id>` waits for that agent to show up in the roster, then points the screen at it.
-    app.attach_wanted = attach;
+    app.attach_wanted = launch.attach;
     if let Some(loaded) = &loaded {
         app.about = crate::config::agents::descriptions(loaded);
         app.mind = crate::config::mind(loaded);
         app.tools_program = crate::config::tooling_program(loaded);
         app.reader = crate::attachments::Reader::of(crate::config::tooling(loaded));
     }
-    app.view_only = view_only;
+    app.view_only = launch.view_only;
     // Whether casper answers is asked once, off the UI thread: the probe starts the program.
     let casper_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if let Some(loaded) = &loaded {
@@ -68,10 +67,12 @@ pub async fn run(
     app.editor = magi_tui::Editor::with_history(crate::history::load());
     if let Some(loaded) = &loaded {
         // The snapshot carries only whether there is a model; the answer needs the catalog.
-        let catalog = crate::config::catalog(
+        let catalog = crate::config::catalog_with_profile(
             loaded,
             magi_host::broker::cards(&crate::config::mind(loaded)).await,
-        );
+            launch.profile.as_deref(),
+        )
+        .unwrap_or_else(|_| magi_host::catalog::Catalog::empty());
         if crate::config::backend(&catalog).is_none() {
             app.no_model = Some(magi_host::no_model(&catalog));
         }
@@ -779,6 +780,7 @@ use connecting::connection_loop;
 
 /// Which agent the screen is pointed at, and what may be sent to one that is not ours.
 mod crewing;
+pub use crewing::Launch;
 use crewing::{dial, direct, footer_data, ours, signal_notice, walk};
 
 /// The pointer, and which of two readers it belongs to.

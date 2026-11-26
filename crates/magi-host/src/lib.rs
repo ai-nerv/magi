@@ -211,6 +211,12 @@ async fn serve_prepared(
     session.set_choices(catalog.choices());
     session.set_profiles(catalog.profile_summaries());
     session.set_profile(catalog.active_profile.clone());
+    session.set_base_model(
+        catalog
+            .base_model
+            .clone()
+            .or_else(|| backend.as_ref().map(|b| b.model.clone())),
+    );
     session.run_helpers_on(tokio::runtime::Handle::current());
     session.set_model(backend.as_ref().map(|backend| magi_proto::ModelInfo {
         name: backend.model.clone(),

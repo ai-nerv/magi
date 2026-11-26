@@ -5,6 +5,29 @@ use magi_proto::ask::Card;
 
 pub mod setup;
 
+/// Clamp a profile's requested thinking level down to the closest level the model supports.
+fn clamp_thinking(
+    requested: magi_model::ThinkingLevel,
+    supported: &[magi_model::ThinkingLevel],
+) -> magi_model::ThinkingLevel {
+    use magi_model::ThinkingLevel;
+    if supported.contains(&requested) {
+        return requested;
+    }
+    let idx = ThinkingLevel::ALL
+        .iter()
+        .position(|l| *l == requested)
+        .unwrap_or(0);
+    ThinkingLevel::ALL
+        .get(..idx)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .find(|l| supported.contains(l))
+        .copied()
+        .unwrap_or(ThinkingLevel::Off)
+}
+
 /// The answer a request leaves room for when nothing configured says how long one may be.
 pub(crate) const REPLY: u64 = 32_000;
 
@@ -123,6 +146,8 @@ pub struct Catalog {
     pub transcript: Option<String>,
     /// Base system prompt prior to layering any profile prompt or preloaded skills.
     pub base_system: Option<String>,
+    /// Base model prior to any profile override (restored when switching to a profile without `model`).
+    pub base_model: Option<String>,
     /// Configured higher-level profiles (`magi.profiles` + `~/.config/magi/profiles/*.md`).
     pub profiles: Vec<crate::profiles::Profile>,
     /// Name of the currently active profile, if any.
@@ -179,6 +204,7 @@ impl Catalog {
             mode: magi_proto::judging::Mode::default(),
             rules: magi_proto::judging::Rules::default(),
             base_system: None,
+            base_model: None,
             profiles: Vec::new(),
             active_profile: None,
             skill_allow: None,
@@ -256,7 +282,9 @@ impl Catalog {
                 serde_json::Value::String(level.to_owned()),
             )
         {
-            wants.thinking = Some(parsed);
+            let supported =
+                magi_model::ThinkingLevel::available(card.reasons, card.capabilities.as_ref());
+            wants.thinking = Some(clamp_thinking(parsed, &supported));
         }
         wants.max_tokens_automatic |= wants.max_tokens.is_none();
         wants.max_tokens = Some(reserved(wants.max_tokens, card.max_output));

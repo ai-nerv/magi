@@ -280,6 +280,7 @@ pub fn memory(loaded: &Loaded) -> String {
 
 /// Everything the daemon could talk to, so `:model` has something to pick among. Built once at start
 /// rather than re-read on each switch. The cards come from melchior, which owns them.
+#[cfg(test)]
 #[must_use]
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
     catalog_with_profile(loaded, cards, None)
@@ -308,14 +309,22 @@ pub fn catalog_with_profile(
             }
             Some(name.to_owned())
         }
-        None if !is_child => {
-            profiles::default_name(loaded).filter(|name| profiles.iter().any(|p| p.name == *name))
-        }
+        None if !is_child => match profiles::default_name(loaded) {
+            Some(name) if profiles.iter().any(|p| p.name == name) => Some(name),
+            Some(missing) => {
+                eprintln!(
+                    "magi: `magi.default_profile` names unknown profile {missing:?} (ignored)"
+                );
+                None
+            }
+            None => None,
+        },
         None => None,
     };
 
     let (mut mode, mut rules) = settings::judging(loaded);
     let mut wants = options(loaded);
+    let mut helpers = settings::helpers(loaded);
     let mut skill_allow = None;
     let mut tool_filter = magi_tools::ToolFilter::All;
     let mut profile_grants = Vec::new();
@@ -330,6 +339,9 @@ pub fn catalog_with_profile(
     } else if let Some(role) = agents::own(loaded) {
         if let Some(m) = role.mode {
             mode = m;
+        }
+        for (k, v) in role.helpers {
+            helpers.roles.insert(k, v);
         }
         for g in role.ask {
             if !rules.ask.contains(&g) {
@@ -377,13 +389,14 @@ pub fn catalog_with_profile(
         wants,
         system: base_system.clone(),
         base_system,
+        base_model: None,
         grants: grants(loaded),
         mode,
         rules,
         environ: environ(loaded),
         chosen: None,
         transcript: None,
-        helpers: settings::helpers(loaded),
+        helpers,
         confine: loaded.config.boolean("confine").unwrap_or(false),
         isolate: loaded.config.boolean("isolation").unwrap_or(true),
         profiles,
@@ -396,6 +409,11 @@ pub fn catalog_with_profile(
             .map(|name| (name, String::new()))
             .collect(),
     };
+    // Resolve base_model without any active profile so switching to a profile without `model`
+    // (or `default`) returns to the configured/remembered base model rather than leaking.
+    let saved_profile = catalog.active_profile.take();
+    catalog.base_model = asked(loaded, &catalog);
+    catalog.active_profile = saved_profile;
     catalog.chosen = asked(loaded, &catalog);
     Ok(catalog)
 }

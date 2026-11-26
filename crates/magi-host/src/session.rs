@@ -68,6 +68,8 @@ pub struct Session {
     /// Currently active higher-level profile name, and available `(name, summary)` choices.
     profile: Option<String>,
     profiles: Vec<(String, String)>,
+    /// Base model chosen outside any profile, restored when switching to a profile without `model`.
+    base_model: Option<String>,
 }
 
 impl Session {
@@ -116,6 +118,7 @@ impl Session {
             judging: magi_proto::judging::Judging::default(),
             profile: None,
             profiles: Vec::new(),
+            base_model: None,
         }
     }
 
@@ -547,6 +550,15 @@ impl Session {
 
     pub fn set_profile(&mut self, profile: Option<String>) {
         self.profile = profile;
+    }
+
+    pub fn set_base_model(&mut self, model: Option<String>) {
+        self.base_model = model;
+    }
+
+    #[must_use]
+    pub fn base_model(&self) -> Option<String> {
+        self.base_model.clone()
     }
 
     #[must_use]

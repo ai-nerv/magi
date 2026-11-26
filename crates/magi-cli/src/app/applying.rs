@@ -63,6 +63,8 @@ impl App {
             } => {
                 self.session_id = Some(session.to_string());
                 self.clear_workflows();
+                self.profile = None;
+                self.profiles.clear();
                 self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;
@@ -261,8 +263,15 @@ impl App {
             HarnessEvent::ProfileChanged {
                 profile, profiles, ..
             } => {
+                if self.profile != profile {
+                    self.clear_workflows();
+                }
                 self.profile = profile;
                 self.profiles = profiles;
+                if self.picking == Some(Picking::Profile) {
+                    self.overlay = None;
+                    self.picking = None;
+                }
             }
             HarnessEvent::ModelChanged {
                 model, thinking, ..

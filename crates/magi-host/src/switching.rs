@@ -61,7 +61,8 @@ pub(super) async fn switch_model(
     *boundary = Some(fresh);
     {
         let mut held = session.lock().await;
-        held.set_model(Some(info));
+        held.set_model(Some(info.clone()));
+        held.set_base_model(Some(info.name));
         held.set_thinking(thinking);
         // Another model has other providers: a choice made for the last one means nothing here.
         held.set_provider(None);
@@ -191,6 +192,9 @@ pub(super) async fn switch_provider(
     None
 }
 
+/// How long profile skill preloading may take before timing out cleanly.
+const PRELOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Resolve a profile's preloaded skills through the bounded skills helper, returning `(loaded, warnings)`.
 pub(crate) async fn preload_skills(
     catalog: &crate::catalog::Catalog,
@@ -200,24 +204,36 @@ pub(crate) async fn preload_skills(
         return (Vec::new(), Vec::new());
     }
     let cancel = crate::cancel::Cancel::default();
-    let (client, selected) = match crate::preparing::listing::discover(catalog, &cancel).await {
-        Ok(found) => found,
-        Err(why) => {
-            return (
-                Vec::new(),
-                vec![format!("skills could not be discovered: {why}")],
-            );
+    let work = async {
+        let (client, selected) = match crate::preparing::listing::discover(catalog, &cancel).await {
+            Ok(found) => found,
+            Err(why) => {
+                return (
+                    Vec::new(),
+                    vec![format!("skills could not be discovered: {why}")],
+                );
+            }
+        };
+        let mut loaded = Vec::new();
+        let mut warnings = Vec::new();
+        for name in names {
+            match selected.load(&client, name, &cancel).await {
+                Ok(doc) => loaded.push((doc.document.name, doc.document.body)),
+                Err(why) => warnings.push(format!("preloaded skill {name:?} skipped: {why}")),
+            }
         }
+        (loaded, warnings)
     };
-    let mut loaded = Vec::new();
-    let mut warnings = Vec::new();
-    for name in names {
-        match selected.load(&client, name, &cancel).await {
-            Ok(doc) => loaded.push((doc.document.name, doc.document.body)),
-            Err(why) => warnings.push(format!("preloaded skill {name:?} skipped: {why}")),
+    match tokio::time::timeout(PRELOAD_TIMEOUT, work).await {
+        Ok(result) => result,
+        Err(_) => {
+            cancel.request();
+            (
+                Vec::new(),
+                vec!["preloaded skills timed out; continuing without them".to_owned()],
+            )
         }
     }
-    (loaded, warnings)
 }
 
 /// Switch the session's active higher-level profile (`""`, `"default"`, `"off"`, or `"none"` clears
@@ -252,14 +268,23 @@ pub(super) async fn switch_profile(
         }
     };
 
-    let current_model = session.lock().await.model_name();
+    let (current_model, base_model) = {
+        let held = session.lock().await;
+        (held.model_name(), held.base_model())
+    };
+    let fallback_model = base_model
+        .filter(|m| snapshot.backend(m).is_some())
+        .or_else(|| {
+            snapshot
+                .base_model
+                .clone()
+                .filter(|m| snapshot.backend(m).is_some())
+        })
+        .or_else(|| snapshot.chosen().filter(|m| snapshot.backend(m).is_some()))
+        .or(current_model);
     let model_name = match &target {
-        Some(profile) => profile
-            .model
-            .clone()
-            .or(current_model.clone())
-            .or_else(|| snapshot.chosen()),
-        None => snapshot.chosen().or(current_model.clone()),
+        Some(profile) => profile.model.clone().or(fallback_model),
+        None => fallback_model,
     };
     if let Some(model) = &model_name
         && snapshot.backend(model).is_none()
@@ -328,10 +353,14 @@ pub(super) async fn switch_profile(
         *boundary = Some(fresh);
     }
 
-    let target_mode = match &target {
-        Some(profile) => profile.mode,
-        None => Some(updated_catalog.mode),
-    };
+    // Always restore base catalog.mode when a profile omits `mode`, so a previous profile's
+    // mode never leaks into the next one.
+    let target_mode = Some(
+        target
+            .as_ref()
+            .and_then(|profile| profile.mode)
+            .unwrap_or(updated_catalog.mode),
+    );
     let target_overlay = target.as_ref().map_or_else(
         magi_proto::judging::Rules::default,
         crate::profiles::Profile::judging_rules,

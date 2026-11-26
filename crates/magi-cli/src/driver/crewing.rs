@@ -4,6 +4,13 @@
 use crate::app::App;
 use magi_proto::UiCommand;
 use magi_tui::footer::FooterData;
+
+/// Session-launch options for [`super::run`].
+pub struct Launch {
+    pub attach: Option<String>,
+    pub view_only: bool,
+    pub profile: Option<String>,
+}
 use tokio::sync::{mpsc, watch};
 
 /// Send a command to whichever session is on screen: attaching is driving, and `--view-only` is

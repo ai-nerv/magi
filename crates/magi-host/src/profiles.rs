@@ -223,16 +223,64 @@ pub fn parse_markdown(name: &str, text: &str) -> Result<Profile, String> {
     let (front, body) = split_frontmatter(text)?;
     let mut tools_allow: Option<BTreeSet<String>> = None;
     let mut tools_deny: Option<BTreeSet<String>> = None;
+    let mut block_key: Option<String> = None;
+    let mut block_items: Vec<String> = Vec::new();
+
+    let flush_block = |key: &mut Option<String>,
+                       items: &mut Vec<String>,
+                       profile: &mut Profile,
+                       tools_allow: &mut Option<BTreeSet<String>>,
+                       tools_deny: &mut Option<BTreeSet<String>>|
+     -> Result<(), String> {
+        let Some(active) = key.take() else {
+            return Ok(());
+        };
+        let list = std::mem::take(items);
+        apply_list_key(&active, list, profile, tools_allow, tools_deny)
+    };
+
     for line in front.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
+        if let Some(rest) = trimmed.strip_prefix("- ")
+            && block_key.is_some()
+        {
+            let item = unquote(rest);
+            if !item.is_empty() {
+                block_items.push(item);
+            }
+            continue;
+        }
+        flush_block(
+            &mut block_key,
+            &mut block_items,
+            &mut profile,
+            &mut tools_allow,
+            &mut tools_deny,
+        )?;
         let Some((key, raw_val)) = trimmed.split_once(':') else {
             return Err(format!("invalid frontmatter line: {trimmed:?}"));
         };
         let key = key.trim();
         let val = raw_val.trim();
+        if val.is_empty()
+            && matches!(
+                key,
+                "skills_preload"
+                    | "skills_allow"
+                    | "tools_allow"
+                    | "tools_deny"
+                    | "allow"
+                    | "ask"
+                    | "deny"
+                    | "agents"
+            )
+        {
+            block_key = Some(key.to_owned());
+            continue;
+        }
         match key {
             "description" => profile.description = non_empty(unquote(val)),
             "model" => profile.model = non_empty(unquote(val)),
@@ -249,39 +297,69 @@ pub fn parse_markdown(name: &str, text: &str) -> Result<Profile, String> {
                     profile.helpers.insert(key.to_owned(), m);
                 }
             }
-            "skills_preload" => profile.skills_preload = parse_list(val),
-            "skills_allow" => profile.skills_allow = Some(parse_list(val)),
-            "tools_allow" => tools_allow = Some(parse_list(val).into_iter().collect()),
-            "tools_deny" => tools_deny = Some(parse_list(val).into_iter().collect()),
-            "allow" => {
-                profile.allow = parse_list(val)
-                    .iter()
-                    .filter_map(|s| parse_grant_shorthand(s))
-                    .collect();
+            "skills_preload" | "skills_allow" | "tools_allow" | "tools_deny" | "allow" | "ask"
+            | "deny" | "agents" => {
+                apply_list_key(
+                    key,
+                    parse_list(val),
+                    &mut profile,
+                    &mut tools_allow,
+                    &mut tools_deny,
+                )?;
             }
-            "ask" => {
-                profile.ask = parse_list(val)
-                    .iter()
-                    .filter_map(|s| parse_grant_shorthand(s))
-                    .collect();
-            }
-            "deny" => {
-                profile.deny = parse_list(val)
-                    .iter()
-                    .filter_map(|s| parse_grant_shorthand(s))
-                    .collect();
-            }
-            "agents" => profile.agents = Some(parse_list(val)),
-            _ => {}
+            other => return Err(format!("unknown frontmatter key {other:?}")),
         }
     }
+    flush_block(
+        &mut block_key,
+        &mut block_items,
+        &mut profile,
+        &mut tools_allow,
+        &mut tools_deny,
+    )?;
     profile.tools = match (tools_allow, tools_deny) {
-        (Some(allow), _) => ToolFilter::Allow(allow),
+        (Some(mut allow), Some(deny)) => {
+            for blocked in deny {
+                allow.remove(&blocked);
+            }
+            ToolFilter::Allow(allow)
+        }
+        (Some(allow), None) => ToolFilter::Allow(allow),
         (None, Some(deny)) => ToolFilter::Deny(deny),
         (None, None) => ToolFilter::All,
     };
     profile.prompt = non_empty(body.trim().to_owned());
     Ok(profile)
+}
+
+fn apply_list_key(
+    key: &str,
+    items: Vec<String>,
+    profile: &mut Profile,
+    tools_allow: &mut Option<BTreeSet<String>>,
+    tools_deny: &mut Option<BTreeSet<String>>,
+) -> Result<(), String> {
+    let parse_grants = |items: Vec<String>| -> Result<Vec<Grant>, String> {
+        items
+            .into_iter()
+            .map(|s| {
+                parse_grant_shorthand(&s)
+                    .ok_or_else(|| format!("invalid permission grant {s:?} in `{key}`"))
+            })
+            .collect()
+    };
+    match key {
+        "skills_preload" => profile.skills_preload = items,
+        "skills_allow" => profile.skills_allow = Some(items),
+        "tools_allow" => *tools_allow = Some(items.into_iter().collect()),
+        "tools_deny" => *tools_deny = Some(items.into_iter().collect()),
+        "allow" => profile.allow = parse_grants(items)?,
+        "ask" => profile.ask = parse_grants(items)?,
+        "deny" => profile.deny = parse_grants(items)?,
+        "agents" => profile.agents = Some(items),
+        other => return Err(format!("unknown frontmatter key {other:?}")),
+    }
+    Ok(())
 }
 
 fn split_frontmatter(text: &str) -> Result<(&str, &str), String> {
@@ -425,5 +503,35 @@ You are in planning mode. Do not modify files.
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "architect");
         assert_eq!(loaded[0].agents, Some(Vec::new()));
+    }
+
+    #[test]
+    fn markdown_supports_yaml_block_lists_and_rejects_typos() {
+        let md = r#"---
+description: Block list test
+tools_deny:
+  - write
+  - edit
+deny:
+  - write
+  - "run:rm"
+agents:
+  - explorer
+---
+Stay read-only.
+"#;
+        let profile = parse_markdown("planner", md).expect("block lists");
+        assert_eq!(
+            profile.tools,
+            ToolFilter::Deny(BTreeSet::from(["write".to_owned(), "edit".to_owned()]))
+        );
+        assert_eq!(profile.deny.len(), 2);
+        assert_eq!(profile.agents, Some(vec!["explorer".to_owned()]));
+
+        let typo = parse_markdown("bad", "---\ntool_deny: [write]\n---\nhi");
+        assert!(typo.is_err(), "unknown frontmatter key must fail");
+
+        let bad_grant = parse_markdown("bad", "---\ndeny: [delete_all]\n---\nhi");
+        assert!(bad_grant.is_err(), "invalid grant shorthand must fail");
     }
 }
