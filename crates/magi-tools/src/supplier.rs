@@ -677,6 +677,10 @@ fn host_of(host: &str, url: &str) -> String {
 
 /// The command's program name, for the permission subject, stepping over any leading `VAR=value`.
 fn first_word(command: &str) -> String {
+    let parsed = crate::bash::first_program(command);
+    if !parsed.is_empty() {
+        return parsed;
+    }
     command
         .split_whitespace()
         .find(|word| !word.contains('=') || word.starts_with('/'))

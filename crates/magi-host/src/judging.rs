@@ -255,9 +255,21 @@ fn key(action: &Action) -> String {
     format!("{} {}", action.verb(), action.subject())
 }
 
+fn rule_matches(rule: &magi_proto::permit::Grant, action: &Action) -> bool {
+    if let Action::Run { command, .. } = action {
+        return magi_tools::bash::names_run(rule, command);
+    }
+    rule.names(action)
+}
+
 impl magi_tools::approve::Approver for Judged {
     fn ask(&self, tool: &str, action: &Action) -> Decision {
-        if let Some(rule) = self.rules.deny.iter().find(|rule| rule.names(action)) {
+        if let Some(rule) = self
+            .rules
+            .deny
+            .iter()
+            .find(|rule| rule_matches(rule, action))
+        {
             return observing::decided(PolicyDecision::RuleDenied {}, self.refuse(
                 action,
                 format!(
@@ -268,7 +280,7 @@ impl magi_tools::approve::Approver for Judged {
                 ),
             ));
         }
-        let ruled = self.rules.ask.iter().any(|rule| rule.names(action));
+        let ruled = self.rules.ask.iter().any(|rule| rule_matches(rule, action));
         if ruled || self.unsure(action) {
             let advice = self.judge.judge(tool, action);
             return observing::delegated(
@@ -307,7 +319,7 @@ impl magi_tools::approve::Approver for Judged {
             .deny
             .iter()
             .chain(&self.rules.ask)
-            .any(|rule| rule.names(action))
+            .any(|rule| rule_matches(rule, action))
             || self.unsure(action)
     }
 }
@@ -319,7 +331,7 @@ impl Judged {
         let Action::Run { command, .. } = action else {
             return false;
         };
-        magi_proto::permit::ambiguous(command)
+        magi_tools::bash::is_ambiguous(command)
             && self
                 .rules
                 .deny

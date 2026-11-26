@@ -17,6 +17,9 @@ const POLL: Duration = Duration::from_millis(20);
 /// How long output may keep arriving after the program itself has exited.
 const AFTER_EXIT: Duration = Duration::from_secs(2);
 
+/// How long a cancelled command-door call gets to emit partial output after `SIGTERM`.
+const CANCEL_GRACE: Duration = Duration::from_millis(800);
+
 /// Run `command` with `input` on its standard input, and return what it wrote to standard output.
 ///
 /// # Errors
@@ -124,9 +127,18 @@ fn collect(
     let started = Instant::now();
     let mut read = None;
     loop {
-        let ended = if cancel.is_cancelled() {
-            Some("was cancelled".to_owned())
-        } else if started.elapsed() > patience {
+        if cancel.is_cancelled() {
+            if observed
+                && sent
+                && !admission
+                && let Some(partial) = graceful_cancel(&mut child, &heard)
+            {
+                return Ok(partial);
+            }
+            stop(&mut child);
+            return Err(Failure::after(sent, "was cancelled"));
+        }
+        let ended = if started.elapsed() > patience {
             Some(format!("was still running after {}s", patience.as_secs()))
         } else if pending.is_some() && started.elapsed() > super::admission::PATIENCE {
             Some("native file admission timed out before any request bytes were sent".to_owned())
@@ -217,6 +229,32 @@ fn send(pending: &mut Option<(Input, Vec<u8>)>) -> bool {
     } else {
         false
     }
+}
+
+/// Signal the child with `SIGTERM` and wait briefly for it to flush a bounded partial reply.
+fn graceful_cancel(
+    child: &mut Child,
+    heard: &std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+) -> Option<Vec<u8>> {
+    let pid = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)?;
+    let _ = rustix::process::kill_process(pid, rustix::process::Signal::Term);
+    let deadline = Instant::now() + CANCEL_GRACE;
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let Ok(Ok(held)) = heard.recv_timeout(left.min(AFTER_EXIT))
+                && !held.is_empty()
+                && held.len() <= FRAME_CAP
+            {
+                return Some(held);
+            }
+            return None;
+        }
+        std::thread::sleep(POLL);
+    }
+    None
 }
 
 /// Kill the child's whole process group, then reap the child.

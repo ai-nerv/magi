@@ -34,6 +34,9 @@ impl Ledger {
     /// Whether `action` is already covered, so nobody need be asked.
     #[must_use]
     pub fn allows(&self, action: &Action) -> bool {
+        if let Action::Run { command, .. } = action {
+            return crate::bash::covers_run(&self.grants, command);
+        }
         self.grants.iter().any(|g| g.covers(action))
     }
 

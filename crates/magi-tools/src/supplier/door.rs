@@ -356,6 +356,9 @@ pub(super) fn write_frame(to: &mut UnixStream, body: &[u8]) -> Result<(), Failed
     }
 }
 
+/// How long a cancelled call waits for a partial reply after half-closing the write side.
+const CANCEL_GRACE: Duration = Duration::from_millis(800);
+
 /// Read one length-prefixed frame's body. The first byte may take as long as the call runs, up
 /// to [`PATIENCE`] and while nobody cancels; the rest must follow within [`MID_FRAME`].
 pub(super) fn read_frame(from: &mut UnixStream, cancel: &dyn Cancel) -> Result<Vec<u8>, String> {
@@ -363,11 +366,18 @@ pub(super) fn read_frame(from: &mut UnixStream, cancel: &dyn Cancel) -> Result<V
     let started = Instant::now();
     let mut header = [0_u8; 4];
     let mut begun: Option<Instant> = None;
+    let mut cancelled_at: Option<Instant> = None;
     let mut have = 0;
     let mut fill = |into: &mut [u8], have: &mut usize, begun: &mut Option<Instant>| {
         while let Some(rest) = into.get_mut(*have..).filter(|rest| !rest.is_empty()) {
             match from.read(rest) {
-                Ok(0) => return Err("the socket closed mid-reply".to_owned()),
+                Ok(0) => {
+                    return Err(if cancelled_at.is_some() {
+                        "cancelled".to_owned()
+                    } else {
+                        "the socket closed mid-reply".to_owned()
+                    });
+                }
                 Ok(n) => {
                     *have += n;
                     begun.get_or_insert_with(Instant::now);
@@ -382,7 +392,16 @@ pub(super) fn read_frame(from: &mut UnixStream, cancel: &dyn Cancel) -> Result<V
                 Err(why) => return Err(why.to_string()),
             }
             if cancel.is_cancelled() {
-                return Err("cancelled".to_owned());
+                if begun.is_none() && cancelled_at.is_none() {
+                    let _ = from.shutdown(std::net::Shutdown::Write);
+                    cancelled_at = Some(Instant::now());
+                } else if let Some(at) = cancelled_at {
+                    if at.elapsed() > CANCEL_GRACE {
+                        return Err("cancelled".to_owned());
+                    }
+                } else {
+                    return Err("cancelled".to_owned());
+                }
             }
             match begun {
                 Some(at) if at.elapsed() > MID_FRAME => {

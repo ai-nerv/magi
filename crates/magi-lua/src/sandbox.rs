@@ -293,8 +293,8 @@ mod tests {
     const CONFIG_ALLOWED: &str = "
         _G _VERSION assert collectgarbage error getmetatable ipairs load next pairs pcall print
         rawequal rawget rawlen rawset select setmetatable tonumber tostring type warn xpcall
-        __magi_tools __magi_watching __stream __stream.connect
-        magi magi.agent magi.fs magi.fs.ls magi.fs.write magi.json magi.json.decode
+        __magi_hooks __magi_tools __magi_watching __stream __stream.connect
+        magi magi.agent magi.fs magi.fs.ls magi.fs.write magi.hook magi.json magi.json.decode
         magi.json.encode magi.load magi.mux magi.provider magi.self magi.shell magi.stream
         magi.stream.connect magi.tool magi.ui magi.watch
         coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
@@ -320,7 +320,7 @@ mod tests {
     const PROJECT_ALLOWED: &str = "
         _G _VERSION assert error getmetatable ipairs next pairs pcall rawequal rawget rawlen
         rawset select setmetatable tonumber tostring type xpcall
-        magi magi.agent magi.load magi.mux magi.provider magi.shell magi.tool magi.ui magi.watch
+        magi magi.agent magi.hook magi.load magi.mux magi.provider magi.shell magi.tool magi.ui magi.watch
         coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
         coroutine.resume coroutine.running coroutine.status coroutine.wrap coroutine.yield
         coroutine.yieldto

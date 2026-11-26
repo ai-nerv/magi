@@ -3,6 +3,7 @@
 //! builtin, `spawn`, coordinates the agent tree rather than doing work on the machine.
 
 pub mod approve;
+pub mod bash;
 pub mod bound;
 pub mod builtin;
 pub mod cancel;
@@ -11,6 +12,7 @@ pub mod environ;
 pub mod family;
 pub mod files;
 pub mod holding;
+pub mod hooking;
 pub mod masking;
 pub mod native;
 pub mod ops;
@@ -24,6 +26,7 @@ pub mod supplier;
 pub mod watching;
 
 pub use cancel::{Cancel, Uncancelled};
+pub use hooking::{After, Before, Hook, Hooks};
 pub use ops::Ops;
 pub use registry::{Prepared, Registry, Sending, Tool};
 pub use watching::{Event, Watch, Watchers};

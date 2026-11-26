@@ -76,6 +76,7 @@ pub enum Sending {
 pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
     watching: crate::watching::Watchers,
+    hooks: crate::hooking::Hooks,
     /// Deferred tools a `tools` lookup has made available, for the rest of the session.
     unlocked: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
@@ -90,6 +91,11 @@ impl Registry {
     /// was asked for. Several may be added, each told in turn; what they hear is [`Event`].
     pub fn watch(&mut self, watcher: Box<dyn Watch>) {
         self.watching.add(watcher);
+    }
+
+    /// Register a pre/post tool hook around tool execution.
+    pub fn hook(&mut self, hook: Box<dyn crate::hooking::Hook>) {
+        self.hooks.add(hook);
     }
 
     /// The handle the watchers hang off, for whoever else has something to report — the permission
@@ -191,9 +197,25 @@ impl Registry {
                             ));
                         }
                     };
-                let output = crate::files::presentation(crate::bound::attachments(
+                let arguments = match self.hooks.run_before(name, arguments.clone()) {
+                    Ok(rewritten) if rewritten != arguments => {
+                        match crate::schema::sampled(&rewritten, &tool.parameters(), tool.strict())
+                        {
+                            Ok(checked) => checked,
+                            Err(wrong) => {
+                                return Output::error(format!(
+                                    "{name}: hook rewrote arguments that do not fit:\n{wrong}"
+                                ));
+                            }
+                        }
+                    }
+                    Ok(kept) => kept,
+                    Err(reason) => return Output::error(reason),
+                };
+                let mut output = crate::files::presentation(crate::bound::attachments(
                     tool.run(&arguments, ops, cancel),
                 ));
+                self.hooks.run_after(name, &arguments, &mut output);
                 self.finished(name, &arguments, &output);
                 Output {
                     images: output.images,
@@ -266,6 +288,23 @@ impl Registry {
                 );
             }
         };
+        let checked = match self.hooks.run_before(name, checked.clone()) {
+            Ok(rewritten) if rewritten != checked => {
+                match crate::schema::sampled(&rewritten, &tool.parameters(), tool.strict()) {
+                    Ok(valid) => valid,
+                    Err(wrong) => {
+                        return Prepared::answered(
+                            name,
+                            Output::error(format!(
+                                "{name}: hook rewrote arguments that do not fit:\n{wrong}"
+                            )),
+                        );
+                    }
+                }
+            }
+            Ok(kept) => kept,
+            Err(reason) => return Prepared::answered(name, Output::error(reason)),
+        };
         let state = match tool.send(&checked, ops) {
             Sending::Sent => State::Sent(checked),
             Sending::Inline => State::Inline(checked),
@@ -317,7 +356,8 @@ impl Registry {
                 None => Output::error(format!("{name} is gone")),
             },
         };
-        let output = crate::files::presentation(crate::bound::attachments(output));
+        let mut output = crate::files::presentation(crate::bound::attachments(output));
+        self.hooks.run_after(&name, &ran, &mut output);
         observe(&output);
         self.finished(&name, &ran, &output);
         Output {

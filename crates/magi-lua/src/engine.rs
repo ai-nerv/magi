@@ -209,6 +209,14 @@ impl Engine {
         self.run_within(source, chunk, budget)
     }
 
+    pub(crate) fn run_call_budget(&mut self, source: &str, chunk: &str) -> Result<(), LuaError> {
+        self.run_within(source, chunk, CALL_BUDGET)
+    }
+
+    pub(crate) fn enter<R>(&mut self, f: impl for<'gc> FnOnce(luna::Context<'gc>) -> R) -> R {
+        self.lua.enter(f)
+    }
+
     /// Run one chunk on at most `budget` fuel. A chunk that spends it, or outgrows the memory
     /// limit, is stopped and reported as failing.
     fn run_within(&mut self, source: &str, chunk: &str, budget: i64) -> Result<(), LuaError> {
@@ -359,6 +367,21 @@ impl Engine {
             });
             magi.set(ctx, "watch", watch).ok();
 
+            let hooks = Table::new(&ctx);
+            ctx.set_global(crate::hooks::HOOKS, hooks);
+            let hook = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                let (name, spec): (Value, Value) = stack.consume(ctx)?;
+                let (Value::String(name), Value::Table(_)) = (name, spec) else {
+                    return Err(raise(ctx, "magi.hook(name, spec): a name and a table"));
+                };
+                if let Value::Table(hooks) = ctx.get_global_value(crate::hooks::HOOKS) {
+                    hooks.set(ctx, name, spec).ok();
+                }
+                stack.replace(ctx, ());
+                Ok(CallbackReturn::Return)
+            });
+            magi.set(ctx, "hook", hook).ok();
+
             // The path of the running binary, so a config can name a peer magi ships. It is a
             // multi-call binary, and `command = "magi"` finds whichever copy the shell sees.
             if let Ok(exe) = std::env::current_exe() {
@@ -450,6 +473,10 @@ const REFUSED_TO_PROJECTS: &[(&str, &str)] = &[
     (
         "watch",
         "a watcher runs after every tool call, so only your own configuration can add one",
+    ),
+    (
+        "hook",
+        "a hook runs around every tool call, so only your own configuration can add one",
     ),
     (
         "load",

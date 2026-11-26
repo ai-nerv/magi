@@ -195,6 +195,7 @@ pub fn install(
     // Installed once, whether or not anything is watching: wiring it conditionally would mean a
     // config that adds a watcher after startup silently never fires.
     registry.watch(Box::new(LuaWatch::new(Rc::clone(&engine))));
+    registry.hook(Box::new(crate::LuaHook::new(Rc::clone(&engine))));
 
     let declared = engine.borrow_mut().tools();
     for (name, spec) in declared {

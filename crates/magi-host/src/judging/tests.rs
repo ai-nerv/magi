@@ -250,6 +250,30 @@ fn a_command_a_deny_rule_cannot_read_for_certain_is_the_persons() {
 }
 
 #[test]
+fn quoted_text_does_not_trigger_deny_rule_while_compound_commands_do() {
+    let rules = Rules {
+        deny: vec![rule("run", "rm")],
+        ask: Vec::new(),
+    };
+    let person = Person::who(true);
+    let gate = gate(Mode::Auto, Some(true), &person, rules);
+    assert!(
+        !gate.overrides(&run(r#"git commit -m "rm -rf / && sudo""#)),
+        "quoted rm in a commit message is data, not a command"
+    );
+    assert!(
+        allowed(&gate.ask("shell", &run(r#"git commit -m "rm -rf /""#))),
+        "auto mode approves a commit message mentioning rm"
+    );
+    assert_eq!(person.times(), 0);
+    assert!(
+        !allowed(&gate.ask("shell", &run("git diff && /bin/rm -rf tmp"))),
+        "compound command invoking /bin/rm is still refused"
+    );
+    assert_eq!(person.times(), 0);
+}
+
+#[test]
 fn edits_lets_a_write_into_the_project_through_and_nothing_else() {
     let person = Person::who(false);
     let gate = gate(Mode::Edits, None, &person, Rules::default());
