@@ -39,6 +39,7 @@ pub async fn run(
     app.attach_wanted = launch.attach;
     if let Some(loaded) = &loaded {
         app.about = crate::config::agents::descriptions(loaded);
+        app.commands = loaded.config.commands.clone();
         app.mind = crate::config::mind(loaded);
         app.tools_program = crate::config::tooling_program(loaded);
         app.reader = crate::attachments::Reader::of(crate::config::tooling(loaded));

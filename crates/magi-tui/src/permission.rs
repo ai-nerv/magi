@@ -80,6 +80,12 @@ fn does(mode: Mode) -> &'static str {
 /// The card.
 #[must_use]
 pub fn view(judging: &Judging, width: u16) -> Rendered {
+    view_with_profile(judging, None, width)
+}
+
+/// The card, showing the active profile when one is contributing overrides.
+#[must_use]
+pub fn view_with_profile(judging: &Judging, profile: Option<&str>, width: u16) -> Rendered {
     let width = width.max(20);
     let mut out = Rendered::default();
     let dim = Style::default().fg(colour::dim());
@@ -92,6 +98,9 @@ pub fn view(judging: &Judging, width: u16) -> Rendered {
     );
     out.say(does(judging.mode), dim);
     out.blank();
+    if let Some(name) = profile.filter(|s| !s.is_empty()) {
+        out.fact("Profile", name);
+    }
     out.steppable(
         "Mode",
         vec![Span::styled(

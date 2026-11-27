@@ -234,6 +234,8 @@ fn backend(root: &Path, mind: &str, url: &str, zai: bool) -> Result<Backend> {
         ),
     )?;
     Ok(Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),

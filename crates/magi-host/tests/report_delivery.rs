@@ -59,6 +59,8 @@ async fn fixture(name: &str, mind: &Mind, child: bool, broken: bool) -> Fixture 
         environ.insert("MAGI_MELCHIOR_ID".into(), "child".into());
     }
     let backend = Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: if broken {
             vec![("broken".into(), "not valid lua".into())]
         } else if name == "explicit" || name == "toolerror" {

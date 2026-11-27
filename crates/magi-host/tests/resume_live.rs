@@ -137,6 +137,8 @@ async fn resume_binding(name: &str, target: &str, cursors: [u64; 2], identity: b
         Mind::answering(&format!("resume-{name}"), "continued B")
     };
     let backend = Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: if identity {
             vec![(
                 "identity".into(),

@@ -47,6 +47,8 @@ mod progress;
 /// A backend that asks `mind` and nothing else.
 fn backend(mind: &Mind) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),

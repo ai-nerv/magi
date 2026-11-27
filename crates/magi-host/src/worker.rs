@@ -16,8 +16,17 @@ struct Job {
     done: oneshot::Sender<Result<(), String>>,
 }
 
+/// Hard safety ceiling on consecutive auto-continued turns triggered by `after_turn` Lua hooks.
+const MAX_AUTO_CONTINUES: usize = 25;
+
 enum Work {
     Turn,
+    /// Expand any inline `/command` tokens in a user prompt using the live Lua VM.
+    DispatchCommand {
+        prompt: String,
+        aside: String,
+        reply: oneshot::Sender<magi_lua::commands::Outcome>,
+    },
     /// Ask the model what the work ahead needs, then put each answer to the person. On this thread
     /// because it is a provider call against this session's context, and it queues behind any turn.
     Declare,
@@ -95,7 +104,7 @@ impl Worker {
             let mut engine = magi_lua::Engine::new();
             engine.install_clients(&backend.clients);
             let mut broken = None;
-            for (name, source) in &backend.tools {
+            for (name, source) in backend.scripts.iter().chain(&backend.tools) {
                 if let Err(why) = engine.run(source, name) {
                     broken = Some(why.to_string());
                 }
@@ -173,20 +182,33 @@ impl Worker {
                     }
                     let outcome = crate::catching::caught(async {
                         match job.kind {
+                            Work::DispatchCommand {
+                                prompt,
+                                aside,
+                                reply,
+                            } => {
+                                let outcome = magi_lua::commands::dispatch(
+                                    &mut engine.borrow_mut(),
+                                    &magi_lua::commands::Request {
+                                        prompt: &prompt,
+                                        aside: &aside,
+                                        profile: backend.active_profile.as_deref(),
+                                        model: Some(backend.model.as_str()),
+                                    },
+                                );
+                                let _ = reply.send(outcome);
+                                Ok(())
+                            }
                             Work::Turn => {
-                                // What balthasar wants done between turns runs beside the next one.
-                                let over = crate::helping::between(
-                                    Arc::clone(&job.session),
-                                    backend.clone(),
-                                    Arc::clone(&scribe),
+                                run_turn_with_hooks(
+                                    &job.session,
+                                    &backend,
+                                    &engine,
+                                    &registry,
+                                    &*ops,
+                                    &scribe,
                                 )
-                                .await;
-                                let outcome =
-                                    turn::run(&job.session, &backend, &registry, &*ops, &scribe)
-                                        .await;
-                                job.session.lock().await.rest();
-                                let _ = over.send(());
-                                outcome.map_err(|why| why.to_string())
+                                .await
                             }
                             Work::TakeOn(grants) => {
                                 ops.take_on(handed(&*ops, &grants));
@@ -249,6 +271,28 @@ impl Worker {
         }
     }
 
+    /// Expand any inline `/command` tokens in a user prompt using the worker's live Lua VM.
+    pub async fn dispatch_command(
+        &self,
+        session: Arc<Mutex<Session>>,
+        prompt: String,
+        aside: String,
+    ) -> Result<magi_lua::commands::Outcome, String> {
+        let (reply, answer) = oneshot::channel();
+        self.queue(
+            session,
+            Work::DispatchCommand {
+                prompt,
+                aside,
+                reply,
+            },
+        )
+        .await?;
+        answer
+            .await
+            .map_err(|_| "session worker stopped before answering inline command".to_owned())
+    }
+
     /// Ask the model what the work ahead needs, and put each answer to the person.
     pub async fn declare(&self, session: Arc<Mutex<Session>>) -> Result<(), String> {
         self.queue(session, Work::Declare).await
@@ -281,6 +325,132 @@ impl Worker {
             .await
             .map_err(|_| "session worker stopped before finishing the request".to_owned())?
     }
+}
+
+/// Run one turn with `before_turn` / `after_turn` Lua hooks, supporting bounded autonomous loops
+/// (e.g. an inline `/goal` command whose `after_turn` hook returns `{ continue = "..." }`).
+async fn run_turn_with_hooks(
+    session: &Arc<Mutex<Session>>,
+    backend: &Backend,
+    engine: &std::rc::Rc<std::cell::RefCell<magi_lua::Engine>>,
+    registry: &magi_tools::Registry,
+    ops: &dyn magi_tools::Ops,
+    scribe: &crate::scribe::Held,
+) -> Result<(), String> {
+    let emit_notices = |session: &Arc<Mutex<Session>>, notices: Vec<String>| {
+        let session = Arc::clone(session);
+        async move {
+            if notices.is_empty() {
+                return;
+            }
+            let held = session.lock().await;
+            let cursor = held.cursor();
+            let publisher = held.publisher();
+            for text in notices {
+                let _ = publisher.send(magi_proto::HarnessEvent::Noticed { cursor, text });
+            }
+        }
+    };
+
+    for iteration in 0..MAX_AUTO_CONTINUES {
+        let latest_prompt = {
+            let held = session.lock().await;
+            held.entries().iter().rev().find_map(|e| match e {
+                magi_proto::Entry::User { text, .. } | magi_proto::Entry::Workflow { text, .. } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+        };
+        let before_out = magi_lua::hooks::before_turn(
+            &mut engine.borrow_mut(),
+            &magi_lua::hooks::TurnBefore {
+                model: &backend.model,
+                profile: backend.active_profile.as_deref(),
+                iteration,
+                prompt: latest_prompt.as_deref(),
+            },
+        );
+        emit_notices(session, before_out.notices).await;
+
+        let mut turn_backend = backend.clone();
+        if !before_out.system.is_empty() {
+            let mut parts: Vec<String> = turn_backend.system.into_iter().collect();
+            parts.extend(before_out.system);
+            turn_backend.system = Some(parts.join("\n\n"));
+        }
+
+        // What balthasar wants done between turns runs beside the next one.
+        let over = crate::helping::between(
+            Arc::clone(session),
+            turn_backend.clone(),
+            Arc::clone(scribe),
+        )
+        .await;
+        let outcome = turn::run(session, &turn_backend, registry, ops, scribe)
+            .await
+            .map_err(|why| why.to_string());
+        let (cancelled, last_text) = {
+            let held = session.lock().await;
+            let cancelled = held.cancel().is_requested();
+            let text = held
+                .entries()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    magi_proto::Entry::Assistant { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            (cancelled, text)
+        };
+        session.lock().await.rest();
+        let _ = over.send(());
+
+        let after_out = magi_lua::hooks::after_turn(
+            &mut engine.borrow_mut(),
+            &magi_lua::hooks::TurnAfter {
+                model: &backend.model,
+                profile: backend.active_profile.as_deref(),
+                iteration,
+                text: &last_text,
+                ok: outcome.is_ok(),
+                cancelled,
+            },
+        );
+        emit_notices(session, after_out.notices).await;
+
+        if outcome.is_err() || cancelled {
+            return outcome;
+        }
+        let Some((next_prompt, next_aside)) = after_out.continue_prompt else {
+            return Ok(());
+        };
+        if iteration + 1 >= MAX_AUTO_CONTINUES {
+            emit_notices(
+                session,
+                vec![format!(
+                    "Auto-continue loop stopped at safety limit ({MAX_AUTO_CONTINUES} turns)."
+                )],
+            )
+            .await;
+            return Ok(());
+        }
+        // Commit the follow-up turn prompt and loop.
+        let mut held = session.lock().await;
+        if held.cancel().is_requested() {
+            return Ok(());
+        }
+        let id = magi_proto::MessageId::new(format!("u{}", held.cursor().next().0));
+        held.commit(magi_proto::Entry::User {
+            id,
+            text: next_prompt,
+            aside: next_aside,
+            images: Vec::new(),
+        })
+        .map_err(|why| why.to_string())?;
+    }
+    Ok(())
 }
 
 /// Ask what the work ahead needs, then put each need through the ordinary prompt. Every need

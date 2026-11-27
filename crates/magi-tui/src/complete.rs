@@ -154,6 +154,19 @@ pub fn resolve_workflows(
     list_instances: &dyn Fn(&str) -> Vec<String>,
     workflows: &[magi_proto::workflow::Summary],
 ) -> Option<Completion> {
+    resolve_all(line, col, list_paths, list_instances, workflows, &[])
+}
+
+/// Complete `:commands`, `@paths`, `$instances`, `/skill <name>`, and inline Lua `/commands`
+/// anywhere in a prompt line.
+pub fn resolve_all(
+    line: &str,
+    col: usize,
+    list_paths: &dyn Fn(&str) -> Vec<String>,
+    list_instances: &dyn Fn(&str) -> Vec<String>,
+    workflows: &[magi_proto::workflow::Summary],
+    slash_commands: &[(String, String)],
+) -> Option<Completion> {
     let before: String = line.chars().take(col).collect();
     if let Some(query) = before.strip_prefix("/skill ") {
         if query.chars().any(char::is_whitespace) {
@@ -210,7 +223,25 @@ pub fn resolve_workflows(
                 .collect(),
             true,
         ),
-        crate::trigger::Trigger::Skill => return None,
+        crate::trigger::Trigger::Skill => {
+            let mut offered: Vec<Candidate> = slash_commands
+                .iter()
+                .map(|(name, detail)| Candidate {
+                    value: format!("/{name}"),
+                    detail: detail.clone(),
+                })
+                .collect();
+            if token.at == 0 && !offered.iter().any(|c| c.value == "/skill") {
+                offered.push(Candidate {
+                    value: "/skill".to_owned(),
+                    detail: "run a workflow skill (/skill <name>)".to_owned(),
+                });
+            }
+            if offered.is_empty() {
+                return None;
+            }
+            (Kind::Skill, offered, true)
+        }
     };
 
     let values: Vec<String> = offered.iter().map(|c| c.value.clone()).collect();
@@ -309,6 +340,25 @@ mod tests {
     fn typing_narrows_the_command_list() {
         let c = resolve(":qu", 3, &no_paths).expect("completion");
         assert_eq!(c.current().map(|c| c.value.as_str()), Some(":quit"));
+    }
+
+    #[test]
+    fn inline_slash_commands_complete_anywhere_in_a_prompt() {
+        let cmds = vec![
+            ("goal".to_owned(), "run until done".to_owned()),
+            ("ponytail".to_owned(), "stay minimal".to_owned()),
+        ];
+        let mid = resolve_all("fix tests /go", 13, &no_paths, &no_paths, &[], &cmds)
+            .expect("mid-sentence /command completion");
+        assert_eq!(mid.kind, Kind::Skill);
+        assert_eq!(mid.token_start, 10);
+        assert_eq!(mid.candidates[0].value, "/goal");
+        assert_eq!(mid.candidates[0].detail, "run until done");
+
+        // At col 0, `/skill` is also offered alongside Lua commands.
+        let start = resolve_all("/", 1, &no_paths, &no_paths, &[], &cmds).expect("col 0");
+        assert!(start.candidates.iter().any(|c| c.value == "/goal"));
+        assert!(start.candidates.iter().any(|c| c.value == "/skill"));
     }
 
     #[test]

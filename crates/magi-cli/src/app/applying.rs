@@ -69,6 +69,7 @@ impl App {
                     self.overlay = None;
                     self.picking = None;
                 }
+                self.refresh_views();
                 self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;
@@ -276,6 +277,7 @@ impl App {
                     self.overlay = None;
                     self.picking = None;
                 }
+                self.refresh_views();
             }
             HarnessEvent::ModelChanged {
                 model, thinking, ..

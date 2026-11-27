@@ -11,12 +11,10 @@ use std::rc::Rc;
 #[derive(Debug, Default, Clone)]
 pub struct Config {
     pub settings: serde_json::Map<String, serde_json::Value>,
-    /// What a config said that magi did not keep, and why, in the order it said it: a declaration
-    /// for something magi does not own, or a setting too deeply nested to describe as JSON.
     pub unkept: Vec<String>,
-    /// Files `magi.load` asked for, in the order it asked. Collected rather than run on the spot,
-    /// since a file already asked for is not queued twice and a diamond of loads terminates.
     pub loads: Vec<String>,
+    pub commands: Vec<(String, String)>,
+    pub scripts: Vec<(String, String)>,
 }
 
 impl Config {
@@ -381,6 +379,7 @@ impl Engine {
                 Ok(CallbackReturn::Return)
             });
             magi.set(ctx, "hook", hook).ok();
+            crate::commands::install(ctx, magi);
 
             // The path of the running binary, so a config can name a peer magi ships. It is a
             // multi-call binary, and `command = "magi"` finds whichever copy the shell sees.
@@ -451,6 +450,8 @@ impl Engine {
                 }
             }
         });
+        let commands = crate::commands::list(self);
+        self.config.borrow_mut().commands = commands;
     }
 }
 
@@ -477,6 +478,10 @@ const REFUSED_TO_PROJECTS: &[(&str, &str)] = &[
     (
         "hook",
         "a hook runs around every tool call, so only your own configuration can add one",
+    ),
+    (
+        "command",
+        "a command runs inside the session VM, so only your own configuration can add one",
     ),
     (
         "load",
@@ -769,6 +774,16 @@ impl Engine {
     /// other path lends nothing and `magi.fs.write` says so rather than writing.
     pub fn attach_ops(&mut self, ops: Rc<dyn magi_tools::Ops>) {
         *self.lent.borrow_mut() = Some(ops);
+    }
+
+    /// Sorted `(name, description)` of all inline `/command` registrations in this VM.
+    pub fn commands(&mut self) -> Vec<(String, String)> {
+        crate::commands::list(self)
+    }
+
+    /// Whether any runtime Lua callbacks (`magi.hook` or `magi.command`) were registered.
+    pub fn has_runtime_callbacks(&mut self) -> bool {
+        crate::hooks::has_any(self) || crate::commands::has_any(self)
     }
 }
 

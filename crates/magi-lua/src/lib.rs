@@ -6,6 +6,7 @@
 
 pub mod acknowledged;
 pub mod client;
+pub mod commands;
 mod convert;
 mod engine;
 mod fs;

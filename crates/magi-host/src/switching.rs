@@ -98,7 +98,7 @@ pub(super) async fn switch_model(
 /// Write down what this directory is now using, so the next run starts with it.
 fn remember(catalog: &crate::catalog::Catalog, model: Option<String>, thinking: Option<String>) {
     let cwd = catalog.cwd.display().to_string();
-    crate::remember::keep(&cwd, &crate::remember::Chosen { model, thinking });
+    crate::remember::keep_model(&cwd, model, thinking);
 }
 
 /// Ask for more or less reasoning from here on, or say why not. The worker is rebuilt because the
@@ -412,6 +412,8 @@ pub(super) async fn switch_profile(
             held.set_thinking(thinking);
         }
         held.set_profile(target.as_ref().map(|p| p.name.clone()));
+        let cwd = updated_catalog.cwd.display().to_string();
+        crate::remember::keep_profile(&cwd, target.as_ref().map(|p| p.name.clone()));
         held.announce_model();
         held.announce_profile();
         let cursor = held.cursor();

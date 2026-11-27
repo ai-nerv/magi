@@ -128,6 +128,8 @@ pub struct App {
     pub folded: std::collections::BTreeSet<String>,
     /// What each configured role is for, by name, for the agents view to say.
     pub about: std::collections::BTreeMap<String, String>,
+    /// Inline Lua `/command` entries `(name, description)` for `/` completion anywhere in a prompt.
+    pub commands: Vec<(String, String)>,
     /// Which program owns the model, asked for a model's card.
     pub mind: String,
     /// Which program offers the tools, asked for casper's float.
@@ -235,6 +237,7 @@ impl App {
             sibling_hover: None,
             folded: std::collections::BTreeSet::new(),
             about: std::collections::BTreeMap::new(),
+            commands: Vec::new(),
             mind: "melchior".to_owned(),
             tools_program: "casper".to_owned(),
             reader: crate::attachments::Reader::default(),
@@ -514,12 +517,13 @@ impl App {
             return;
         };
         // `$` offers whoever is listening, read on the keystroke: a dead instance did not deregister.
-        let resolved = magi_tui::complete::resolve_workflows(
+        let resolved = magi_tui::complete::resolve_all(
             &line,
             col,
             list_paths,
             &|_| self.reachable.iter().map(|them| them.id.clone()).collect(),
             if row == 0 { &self.workflows } else { &[] },
+            &self.commands,
         );
         self.overlay = resolved
             .filter(|found| {

@@ -88,6 +88,15 @@ fn report() -> String {
             .collect();
         row(&mut out, "profiles", &names.join(", "));
     }
+    if !loaded.config.commands.is_empty() {
+        let names: Vec<String> = loaded
+            .config
+            .commands
+            .iter()
+            .map(|(n, _)| format!("/{n}"))
+            .collect();
+        row(&mut out, "commands", &names.join(", "));
+    }
     row(
         &mut out,
         "environment",

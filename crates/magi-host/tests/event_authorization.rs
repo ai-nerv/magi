@@ -137,6 +137,8 @@ fn approver(mode: &str, answer: &Arc<Answer>, root: &Path) -> Option<Arc<dyn App
 
 fn backend(mind: &Mind, root: &Path, mode: &str) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: vec![(
             "private-fixture.lua".into(),
             r#"

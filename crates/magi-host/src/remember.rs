@@ -11,6 +11,8 @@ pub struct Chosen {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[must_use]
@@ -38,6 +40,25 @@ pub fn forget(cwd: &str) {
 pub fn keep(cwd: &str, chosen: &Chosen) {
     let _ = changed(&path(), |everything| {
         everything.insert(cwd.to_owned(), chosen.clone());
+        true
+    });
+}
+
+/// Update only the remembered model/thinking for `cwd`, preserving any remembered profile.
+pub fn keep_model(cwd: &str, model: Option<String>, thinking: Option<String>) {
+    let _ = changed(&path(), |everything| {
+        let entry = everything.entry(cwd.to_owned()).or_default();
+        entry.model = model;
+        entry.thinking = thinking;
+        true
+    });
+}
+
+/// Update only the remembered profile for `cwd`, preserving any remembered model/thinking.
+pub fn keep_profile(cwd: &str, profile: Option<String>) {
+    let _ = changed(&path(), |everything| {
+        let entry = everything.entry(cwd.to_owned()).or_default();
+        entry.profile = profile;
         true
     });
 }
@@ -121,6 +142,7 @@ mod tests {
             Chosen {
                 model: Some("one".into()),
                 thinking: None,
+                profile: None,
             },
         );
         everything.insert(
@@ -128,13 +150,35 @@ mod tests {
             Chosen {
                 model: Some("two".into()),
                 thinking: Some("high".into()),
+                profile: Some("planner".into()),
             },
         );
         let text = serde_json::to_string(&everything).expect("write");
         let read: BTreeMap<String, Chosen> = serde_json::from_str(&text).expect("read");
         assert_eq!(read["/a"].model.as_deref(), Some("one"));
         assert_eq!(read["/b"].thinking.as_deref(), Some("high"));
+        assert_eq!(read["/b"].profile.as_deref(), Some("planner"));
         assert_eq!(read["/a"].thinking, None);
+
+        // keep_profile and keep_model preserve each other's fields cleanly.
+        let dir = magi_model::scratch::Scratch::new("magi-chosen", "merge-fields");
+        let file = dir.join("magi").join("chosen.json");
+        changed(&file, |all| {
+            let entry = all.entry("/proj".into()).or_default();
+            entry.model = Some("m/a".into());
+            entry.thinking = Some("high".into());
+            true
+        })
+        .expect("write model");
+        changed(&file, |all| {
+            all.entry("/proj".into()).or_default().profile = Some("planner".into());
+            true
+        })
+        .expect("write profile");
+        let loaded = super::read(&file);
+        assert_eq!(loaded["/proj"].model.as_deref(), Some("m/a"));
+        assert_eq!(loaded["/proj"].thinking.as_deref(), Some("high"));
+        assert_eq!(loaded["/proj"].profile.as_deref(), Some("planner"));
     }
 
     #[test]

@@ -62,6 +62,8 @@ async fn live(name: &str) -> Option<Live> {
 
 fn backend(mind: &Mind, window: u64) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),

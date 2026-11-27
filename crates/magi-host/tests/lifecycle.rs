@@ -60,6 +60,8 @@ async fn configured(name: &str, mind: &Mind, broken: bool) -> Fixture {
     let path = dir.join("s.sock");
     let listener = magi_ipc::bind(&path).await.expect("bind");
     let backend = Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: if broken {
             vec![("broken".into(), "not lua at all".into())]
         } else {

@@ -14,6 +14,8 @@ use magi_testkit::Mind;
 
 fn backend(mind: &Mind) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),

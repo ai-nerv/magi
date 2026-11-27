@@ -194,6 +194,8 @@ casper.file_tool("store",{operation="write",description="native write",parameter
 
 fn backend(mind: &Mind, cwd: &Path) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),

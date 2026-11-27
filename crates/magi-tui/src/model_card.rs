@@ -69,6 +69,10 @@ pub struct Card<'a> {
     pub reasons: bool,
     pub thinking: &'a str,
     pub thinking_controls: bool,
+    /// Active higher-level profile name, if any.
+    pub profile: Option<&'a str>,
+    /// Whether any profiles are configured (shows the Profile switcher row when true).
+    pub has_profiles: bool,
     /// Which provider serves it, by tag; `None` leaves it to the router.
     pub provider: Option<&'a str>,
     /// Plan/billing label for subscription or token-plan models.
@@ -247,6 +251,16 @@ fn settings(out: &mut Rendered, card: &Card<'_>, ink: &Ink) {
         ]),
         Some("switch"),
     );
+    if card.has_profiles {
+        let label = card.profile.unwrap_or("default");
+        out.push(
+            Line::from(vec![
+                Span::styled(format!("{:<14}", "Profile"), ink.label),
+                Span::styled(format!("{label}  ⏎"), ink.value),
+            ]),
+            Some("profile"),
+        );
+    }
     out.push(
         Line::from(vec![
             Span::styled(format!("{:<14}", "Accounts"), ink.label),

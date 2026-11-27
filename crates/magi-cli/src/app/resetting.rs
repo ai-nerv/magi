@@ -104,7 +104,7 @@ fn forget_model() -> String {
     };
     let cwd = cwd.display().to_string();
     let held = magi_host::remember::of(&cwd);
-    if held.model.is_none() && held.thinking.is_none() {
+    if held.model.is_none() && held.thinking.is_none() && held.profile.is_none() {
         return "Nothing was remembered here; `magi.model` was already being followed.".to_owned();
     }
     magi_host::remember::forget(&cwd);

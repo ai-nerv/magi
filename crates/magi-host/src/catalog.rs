@@ -45,8 +45,12 @@ pub(crate) fn reserved(wanted: Option<u64>, cap: Option<u64>) -> u64 {
 /// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
 #[derive(Debug, Clone, Default)]
 pub struct Backend {
+    /// Config/init scripts containing runtime hooks or inline commands, loaded before `tools`.
+    pub scripts: Vec<(String, String)>,
     pub tools: Vec<(String, String)>,
     pub clients: Vec<(String, String)>,
+    /// Name of the active higher-level profile, if any (exposed to Lua commands and hooks).
+    pub active_profile: Option<String>,
     /// Which program fills the `tools` role, and what this session tells it.
     pub tooling: magi_tools::supplier::Tooling,
     pub cwd: std::path::PathBuf,
@@ -111,6 +115,8 @@ pub type Spend = std::sync::Arc<std::sync::atomic::AtomicU64>;
 
 #[derive(Debug, Clone)]
 pub struct Catalog {
+    /// Config/init scripts that registered runtime hooks or inline commands.
+    pub scripts: Vec<(String, String)>,
     /// Tool descriptions, as `(name, source)`.
     pub tools: Vec<(String, String)>,
     /// The family's client libraries, as `(name, source)`.
@@ -186,6 +192,7 @@ impl Catalog {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            scripts: Vec::new(),
             tools: Vec::new(),
             clients: Vec::new(),
             tooling: magi_tools::supplier::Tooling::default(),
@@ -303,8 +310,10 @@ impl Catalog {
             .active_profile_ref()
             .map_or_else(|| self.profile_grants.clone(), |p| p.allow.clone());
         card.ready.then(|| Backend {
+            scripts: self.scripts.clone(),
             tools: self.tools.clone(),
             clients: self.clients.clone(),
+            active_profile: self.active_profile.clone(),
             environ: self.environ.clone(),
             cwd: self.cwd.clone(),
             model: card.id.clone(),

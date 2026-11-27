@@ -33,7 +33,12 @@ pub fn load() -> Result<Loaded, LuaError> {
                 "no configuration; run `make configs` to install it",
             ),
         })?;
-    engine.run_file(&entry)?;
+    let init_source = std::fs::read_to_string(&entry).map_err(|source| LuaError::Io {
+        file: entry.display().to_string(),
+        source,
+    })?;
+    engine.run(&init_source, &entry.display().to_string())?;
+    let init_has_callbacks = engine.has_runtime_callbacks();
 
     // Read before anything is borrowed and before any tool description runs: a role names the
     // program magi asks for a client library, and a tool description opens that library as it
@@ -120,7 +125,10 @@ pub fn load() -> Result<Loaded, LuaError> {
             project::apply(&mut engine, &local)?;
         }
     }
-    let config = events::harvest(&mut engine, &cwd)?;
+    let mut config = events::harvest(&mut engine, &cwd)?;
+    if init_has_callbacks {
+        config.scripts.push(("init.lua".to_owned(), init_source));
+    }
 
     // Everything a config said that magi did not keep, whoever said it; both cases were silent before.
     for said in &config.unkept {
@@ -309,16 +317,19 @@ pub fn catalog_with_profile(
             }
             Some(name.to_owned())
         }
-        None if !is_child => match profiles::default_name(loaded) {
-            Some(name) if profiles.iter().any(|p| p.name == name) => Some(name),
-            Some(missing) => {
-                eprintln!(
-                    "magi: `magi.default_profile` names unknown profile {missing:?} (ignored)"
-                );
-                None
-            }
-            None => None,
-        },
+        None if !is_child => remembered()
+            .profile
+            .filter(|name| profiles.iter().any(|p| &p.name == name))
+            .or_else(|| match profiles::default_name(loaded) {
+                Some(name) if profiles.iter().any(|p| p.name == name) => Some(name),
+                Some(missing) => {
+                    eprintln!(
+                        "magi: `magi.default_profile` names unknown profile {missing:?} (ignored)"
+                    );
+                    None
+                }
+                None => None,
+            }),
         None => None,
     };
 
@@ -397,6 +408,7 @@ pub fn catalog_with_profile(
         }
     }
     let mut catalog = magi_host::catalog::Catalog {
+        scripts: loaded.config.scripts.clone(),
         mind: mind(loaded),
         memory: memory(loaded),
         tooling,
