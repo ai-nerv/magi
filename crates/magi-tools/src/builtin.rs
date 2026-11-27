@@ -156,14 +156,30 @@ impl Tool for Spawn {
     }
 
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "role": {
+        let (role_schema, required) = if self.strict_kinds && !self.kinds.is_empty() {
+            let allowed: Vec<&str> = self.kinds.iter().map(|k| k.name.as_str()).collect();
+            (
+                json!({
+                    "type": "string",
+                    "enum": allowed,
+                    "description": "Required: one of the allowed roles listed above.",
+                }),
+                json!(["role", "prompt"]),
+            )
+        } else {
+            (
+                json!({
                     "type": "string",
                     "description": "What the child is for: one of the roles listed above, or any \
                                     one word like `backend` or `tests`.",
-                },
+                }),
+                json!(["prompt"]),
+            )
+        };
+        json!({
+            "type": "object",
+            "properties": {
+                "role": role_schema,
                 "prompt": {
                     "type": "string",
                     "description": "The complete brief: the goal, the files it owns and must stay \
@@ -175,7 +191,7 @@ impl Tool for Spawn {
                     "description": "Whether the child may start children of its own. Default true.",
                 }
             },
-            "required": ["prompt"],
+            "required": required,
         })
     }
 
@@ -506,6 +522,9 @@ mod tests {
             }],
         );
         spawn.strict_kinds = true;
+        let schema = spawn.parameters();
+        assert_eq!(schema["properties"]["role"]["enum"], json!(["explorer"]));
+        assert_eq!(schema["required"], json!(["role", "prompt"]));
         let refused = spawn.run(
             &json!({ "role": "builder", "prompt": "edit everything" }),
             &ops,

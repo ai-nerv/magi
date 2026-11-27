@@ -311,7 +311,10 @@ pub fn parse_markdown(name: &str, text: &str) -> Result<Profile, String> {
                 );
             }
             "safety" | "memory" | "decision" | "summary" => {
-                if let Some(m) = non_empty(unquote(val)) {
+                let raw = unquote(val);
+                if raw.eq_ignore_ascii_case("false") || raw.eq_ignore_ascii_case("off") {
+                    profile.helpers.insert(key.to_owned(), String::new());
+                } else if let Some(m) = non_empty(raw) {
                     profile.helpers.insert(key.to_owned(), m);
                 }
             }

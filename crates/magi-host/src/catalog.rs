@@ -5,8 +5,9 @@ use magi_proto::ask::Card;
 
 pub mod setup;
 
-/// Clamp a profile's requested thinking level down to the closest level the model supports.
-fn clamp_thinking(
+/// Clamp a requested thinking level down to the closest level the model supports.
+#[must_use]
+pub fn clamp_thinking(
     requested: magi_model::ThinkingLevel,
     supported: &[magi_model::ThinkingLevel],
 ) -> magi_model::ThinkingLevel {
@@ -172,7 +173,8 @@ impl Backend {
 }
 
 impl Catalog {
-    pub(crate) fn thinking_levels(&self, name: &str) -> Option<Vec<magi_model::ThinkingLevel>> {
+    #[must_use]
+    pub fn thinking_levels(&self, name: &str) -> Option<Vec<magi_model::ThinkingLevel>> {
         let card = self.find(name)?;
         Some(magi_model::ThinkingLevel::available(
             card.reasons,
@@ -231,12 +233,17 @@ impl Catalog {
     }
 
     /// Effective helper model map with active profile overrides layered on top of base helpers.
+    /// An empty value disables a helper role (`models = { memory = false }`).
     #[must_use]
     pub fn effective_helpers(&self) -> Helpers {
         let mut helpers = self.helpers.clone();
         if let Some(profile) = self.active_profile_ref() {
             for (role, model) in &profile.helpers {
-                helpers.roles.insert(role.clone(), model.clone());
+                if model.is_empty() {
+                    helpers.roles.remove(role);
+                } else {
+                    helpers.roles.insert(role.clone(), model.clone());
+                }
             }
         }
         helpers

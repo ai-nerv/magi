@@ -47,6 +47,10 @@ impl App {
     }
 
     pub fn open_profile_picker(&mut self) {
+        if self.view_only {
+            self.refuse_view_only();
+            return;
+        }
         if self.profiles.is_empty() {
             self.show_notice(
                 "No profiles configured. Add `magi.profiles` in init.lua or `~/.config/magi/profiles/*.md`."

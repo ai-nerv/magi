@@ -364,6 +364,9 @@ fn shared(key: KeyEvent, editor: &mut Editor, busy: bool, ctrl: bool) -> Option<
         KeyCode::Char('.') if key.modifiers.contains(KeyModifiers::ALT) => {
             Action::Crew { forward: true }
         }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+            Action::Command(":profile next".to_owned())
+        }
         KeyCode::Char('d') if ctrl => Action::Scroll(Scroll::PageDown),
         KeyCode::Char('u') if ctrl => Action::Scroll(Scroll::PageUp),
         KeyCode::Char('r') if ctrl => {
@@ -582,6 +585,22 @@ mod modal_tests {
             &mut modal,
         );
         assert_eq!(modal.mode, Mode::Normal, "the menu handled it, not vim");
+    }
+
+    #[test]
+    fn alt_p_cycles_profile_in_normal_mode() {
+        let mut editor = Editor::new();
+        let mut modal = Modal::default();
+        let action = handle(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+            &mut editor,
+            &mut None,
+            &mut None,
+            20,
+            false,
+            &mut modal,
+        );
+        assert_eq!(action, Action::Command(":profile next".to_owned()));
     }
 }
 

@@ -361,3 +361,36 @@ async fn cancelling_a_flush_keeps_pending_entries_until_a_later_acknowledgment()
         .expect("retry flush");
     assert!(!session.lock().await.has_pending());
 }
+
+#[tokio::test]
+async fn resume_reannounces_active_profile_after_session_snapshot() {
+    let peer = Peer::new("profile-reannounce", |request| {
+        std::future::ready(candidate(&request))
+    })
+    .await;
+    let session = session();
+    {
+        let mut held = session.lock().await;
+        held.set_profiles(vec![("planner".into(), "plan only".into())]);
+        held.set_profile(Some("planner".into()));
+    }
+    let mut events = session.lock().await.subscribe();
+    resume(&session, &RwLock::new(None), &peer.scribe().await, "B")
+        .await
+        .expect("resume B");
+    let first = events.try_recv().expect("snapshot event");
+    assert!(matches!(
+        first,
+        magi_proto::HarnessEvent::SessionSnapshot { .. }
+    ));
+    let second = events.try_recv().expect("profile event after snapshot");
+    match second {
+        magi_proto::HarnessEvent::ProfileChanged {
+            profile, profiles, ..
+        } => {
+            assert_eq!(profile.as_deref(), Some("planner"));
+            assert_eq!(profiles, vec![("planner".into(), "plan only".into())]);
+        }
+        other => panic!("expected ProfileChanged after resume snapshot, got {other:?}"),
+    }
+}

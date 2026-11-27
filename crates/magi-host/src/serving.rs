@@ -438,11 +438,14 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     // A screen that fell behind has lost deltas it cannot ask for again, so it is
                     // handed the whole session as it now stands.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let now = {
+                        let (now, profile_event) = {
                             let held = session.lock().await;
-                            held.snapshot(held.cursor())
+                            (held.snapshot(held.cursor()), held.profile_event())
                         };
                         writer.write(&now).await?;
+                        if let Some(event) = profile_event {
+                            writer.write(&event).await?;
+                        }
                     }
                     Err(_) => break,
                 }

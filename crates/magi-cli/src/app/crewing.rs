@@ -65,6 +65,8 @@ impl App {
         self.focus = None;
         self.model = None;
         self.choices.clear();
+        self.profile = None;
+        self.profiles.clear();
         self.clear_workflows();
         self.set_status(magi_proto::AgentStatus::Idle);
         self.selection = None;

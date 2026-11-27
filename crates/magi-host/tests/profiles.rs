@@ -240,7 +240,36 @@ async fn set_profile_switches_model_mode_overlay_and_resets_to_default() {
         "{refused:?}"
     );
 
-    // Clearing back to "default" restores base model and mode.
+    // Manually switching model while inside a profile that pins `model` (planner -> fake/plan)
+    // must NOT clobber `base_model` (fake/base): clearing back to `default` still restores base!
+    writer
+        .write(&UiCommand::SetProfile {
+            name: "planner".into(),
+        })
+        .await
+        .expect("set planner again");
+    for _ in 0..4 {
+        let _: HarnessEvent = tokio::time::timeout(Duration::from_secs(5), reader.read())
+            .await
+            .expect("timeout")
+            .expect("event");
+    }
+    writer
+        .write(&UiCommand::SetModel {
+            name: "fake/exec".into(),
+        })
+        .await
+        .expect("override model temporarily");
+    let model_ev: HarnessEvent = tokio::time::timeout(Duration::from_secs(5), reader.read())
+        .await
+        .expect("timeout")
+        .expect("model changed");
+    assert!(
+        matches!(model_ev, HarnessEvent::ModelChanged { model: Some(ref m), .. } if m.name == "fake/exec"),
+        "{model_ev:?}"
+    );
+
+    // Clearing back to "default" restores original base model (fake/base), not the temporary override.
     writer
         .write(&UiCommand::SetProfile {
             name: "default".into(),

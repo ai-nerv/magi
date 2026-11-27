@@ -62,7 +62,13 @@ pub(super) async fn switch_model(
     {
         let mut held = session.lock().await;
         held.set_model(Some(info.clone()));
-        held.set_base_model(Some(info.name));
+        if catalog
+            .active_profile_ref()
+            .and_then(|p| p.model.as_deref())
+            .is_none()
+        {
+            held.set_base_model(Some(info.name));
+        }
         held.set_thinking(thinking);
         // Another model has other providers: a choice made for the last one means nothing here.
         held.set_provider(None);
@@ -272,9 +278,13 @@ pub(super) async fn switch_profile(
         }
     };
 
-    let (current_model, base_model) = {
+    let (current_model, base_model, current_provider) = {
         let held = session.lock().await;
-        (held.model_name(), held.base_model())
+        (
+            held.model_name(),
+            held.base_model(),
+            held.provider().map(ToOwned::to_owned),
+        )
     };
     let fallback_model = base_model
         .filter(|m| snapshot.backend(m).is_some())
@@ -285,7 +295,7 @@ pub(super) async fn switch_profile(
                 .filter(|m| snapshot.backend(m).is_some())
         })
         .or_else(|| snapshot.chosen().filter(|m| snapshot.backend(m).is_some()))
-        .or(current_model);
+        .or_else(|| current_model.clone());
     let model_name = match &target {
         Some(profile) => profile.model.clone().or(fallback_model),
         None => fallback_model,
@@ -312,6 +322,14 @@ pub(super) async fn switch_profile(
 
     let updated_catalog = {
         let mut catalog = models.catalog.write().await;
+        // Re-verify under the write lock in case a concurrent `models.reload` ran while preloading.
+        if let Some(model) = &model_name
+            && catalog.backend(model).is_none()
+        {
+            return Some(catalog.unusable(model).unwrap_or_else(|| {
+                format!("profile {requested:?} names model {model:?}, which is no longer available")
+            }));
+        }
         catalog.active_profile = target.as_ref().map(|p| p.name.clone());
         catalog.skill_allow = target.as_ref().and_then(|p| p.skills_allow.clone());
         catalog.preloaded_skills = preloaded;
@@ -329,6 +347,9 @@ pub(super) async fn switch_profile(
     if let Some(model) = &model_name
         && let Some(mut backend) = updated_catalog.backend(model)
     {
+        if current_model.as_deref() == Some(backend.model.as_str()) {
+            backend.wants.provider = current_provider;
+        }
         if let Some(previous) = boundary.as_ref() {
             backend.grants = previous.held_grants();
         }

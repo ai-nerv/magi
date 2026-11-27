@@ -59,7 +59,7 @@ pub fn all(loaded: &Loaded) -> Vec<Role> {
             let mut model = text(held, "model");
             let mut thinking = text(held, "thinking");
             let helpers =
-                super::profiles::parse_models(held.get("models"), &mut model, &mut thinking);
+                super::profiles::parse_models(name, held.get("models"), &mut model, &mut thinking);
             let (skills_preload, skills_allow) = super::profiles::parse_skills(held.get("skills"));
             let (mode, allow, ask, deny) =
                 super::profiles::parse_permissions(name, held.get("permissions"));

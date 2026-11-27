@@ -247,14 +247,21 @@ impl Registry {
                     file_delivery: output.file_delivery,
                 }
             }
-            None => {
-                let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
-                Output::error(format!(
-                    "there is no tool called {name:?}. Available: {}",
-                    known.join(", ")
-                ))
-            }
+            None => self.unknown_tool(name),
         }
+    }
+
+    fn unknown_tool(&self, name: &str) -> Output {
+        let known: Vec<&str> = self
+            .tools
+            .keys()
+            .filter(|k| self.filter.allows(k))
+            .map(String::as_str)
+            .collect();
+        Output::error(format!(
+            "there is no tool called {name:?}. Available: {}",
+            known.join(", ")
+        ))
     }
 
     /// Answer a call whose arguments are still the text the model streamed. The entry point a turn
@@ -281,14 +288,7 @@ impl Registry {
             return Prepared::answered(name, refused);
         }
         let Some(tool) = self.get(name) else {
-            let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
-            return Prepared::answered(
-                name,
-                Output::error(format!(
-                    "there is no tool called {name:?}. Available: {}",
-                    known.join(", ")
-                )),
-            );
+            return Prepared::answered(name, self.unknown_tool(name));
         };
         let parsed = match crate::repair::arguments(arguments) {
             Ok(parsed) => parsed,

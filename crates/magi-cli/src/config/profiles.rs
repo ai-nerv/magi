@@ -83,7 +83,7 @@ fn parse_lua_profile(name: &str, held: &serde_json::Map<String, Value>) -> Profi
     };
     let mut model = text("model");
     let mut thinking = text("thinking");
-    let helpers = parse_models(held.get("models"), &mut model, &mut thinking);
+    let helpers = parse_models(name, held.get("models"), &mut model, &mut thinking);
     let (skills_preload, skills_allow) = parse_skills(held.get("skills"));
     let (mode, allow, ask, deny) = parse_permissions(name, held.get("permissions"));
     let tools = parse_tool_filter(held.get("tools"));
@@ -109,6 +109,7 @@ fn parse_lua_profile(name: &str, held: &serde_json::Map<String, Value>) -> Profi
 }
 
 pub(super) fn parse_models(
+    owner: &str,
     value: Option<&Value>,
     model: &mut Option<String>,
     thinking: &mut Option<String>,
@@ -118,7 +119,12 @@ pub(super) fn parse_models(
         return helpers;
     };
     for (k, v) in models {
+        if v.as_bool() == Some(false) && !matches!(k.as_str(), "main" | "thinking") {
+            helpers.insert(k.clone(), String::new());
+            continue;
+        }
         let Some(val) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            eprintln!("magi: {owner:?} models.{k} expects a model string (or false for helpers)");
             continue;
         };
         match k.as_str() {
@@ -138,6 +144,46 @@ pub(super) fn parse_models(
         }
     }
     helpers
+}
+
+/// Drop-in `.md` profile files in `dir`, for config staleness detection.
+pub(super) fn md_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Post-process a constructed catalog: warn if the active profile's requested model is unavailable,
+/// and clamp any child agent role's requested thinking level to what the chosen model supports.
+pub(super) fn finish_catalog(
+    catalog: &mut magi_host::catalog::Catalog,
+    role_thinking: Option<magi_model::ThinkingLevel>,
+) {
+    if let Some(profile) = catalog.active_profile_ref()
+        && let Some(model) = profile.model.as_deref()
+        && catalog.backend(model).is_none()
+    {
+        let why = catalog
+            .unusable(model)
+            .unwrap_or_else(|| format!("model {model:?} is not available"));
+        eprintln!(
+            "magi: profile {:?} requested {model:?}, falling back ({why})",
+            profile.name
+        );
+    }
+    if let Some(requested) = role_thinking
+        && let Some(chosen) = catalog.chosen.as_deref()
+        && let Some(supported) = catalog.thinking_levels(chosen)
+    {
+        catalog.wants.thinking = Some(magi_host::catalog::clamp_thinking(requested, &supported));
+    }
 }
 
 pub(super) fn parse_prompt(owner: &str, value: Option<&Value>) -> Option<String> {
@@ -436,8 +482,11 @@ mod tests {
                 name: "architect".into()
             })
         );
+        app.overlay = None;
 
-        // Switching sessions via SessionSnapshot must clear stale profile state.
+        // Switching sessions via SessionSnapshot must clear stale profile state and picker.
+        app.open_profile_picker();
+        assert!(app.overlay.is_some());
         app.apply(magi_proto::HarnessEvent::SessionSnapshot {
             cursor: magi_proto::Cursor(2),
             session: magi_proto::SessionId::new("child"),
@@ -450,5 +499,68 @@ mod tests {
         });
         assert_eq!(app.profile, None);
         assert!(app.profiles.is_empty());
+        assert!(app.overlay.is_none());
+        assert_eq!(app.picking, None);
+
+        // View-only refuses opening the profile picker, and attach_to clears stale profile state.
+        app.apply(magi_proto::HarnessEvent::ProfileChanged {
+            cursor: magi_proto::Cursor(3),
+            profile: Some("architect".into()),
+            profiles: vec![("architect".into(), "design".into())],
+        });
+        app.view_only = true;
+        app.open_profile_picker();
+        assert!(app.overlay.is_none());
+        app.attach_to(None);
+        assert_eq!(app.profile, None);
+        assert!(app.profiles.is_empty());
+    }
+
+    #[test]
+    fn helper_disabling_md_watcher_and_child_thinking_clamp() {
+        let cfg = loaded(
+            r#"
+            magi.profiles = {
+              quiet = {
+                models = { memory = false, safety = "m/safe" },
+              },
+            }
+            "#,
+        );
+        let profiles = all_with_dir(&cfg, None);
+        assert_eq!(profiles.len(), 1);
+        let mut catalog = magi_host::catalog::Catalog::empty();
+        catalog
+            .helpers
+            .roles
+            .insert("memory".into(), "@main".into());
+        catalog.profiles = profiles.clone();
+        catalog.active_profile = Some("quiet".into());
+        let eff = catalog.effective_helpers();
+        assert!(!eff.roles.contains_key("memory"));
+        assert_eq!(eff.roles.get("safety").map(String::as_str), Some("m/safe"));
+
+        // Markdown profiles disable helpers via `memory: false` and are found by `md_files`.
+        let dir = magi_model::scratch::Scratch::new("magi-profiles", "md-watch");
+        std::fs::write(dir.join("quiet.md"), "---\nmemory: false\n---\nQuiet.\n").expect("write");
+        std::fs::write(dir.join("ignore.txt"), "skip").expect("write");
+        assert_eq!(md_files(&dir), vec![dir.join("quiet.md")]);
+        let md_loaded = magi_host::profiles::load_dir(&dir);
+        assert_eq!(
+            md_loaded[0].helpers.get("memory").map(String::as_str),
+            Some("")
+        );
+
+        // finish_catalog clamps child role thinking to what the chosen model supports.
+        let mut card = serde_json::from_value::<magi_proto::ask::Card>(serde_json::json!({
+            "id": "m/plain", "provider": "m", "name": "plain", "api": "x", "ready": true
+        }))
+        .expect("card");
+        card.reasons = false;
+        catalog.cards.push(card);
+        catalog.chosen = Some("m/plain".into());
+        catalog.active_profile = None;
+        finish_catalog(&mut catalog, Some(magi_model::ThinkingLevel::Max));
+        assert_eq!(catalog.wants.thinking, Some(magi_model::ThinkingLevel::Off));
     }
 }

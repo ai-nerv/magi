@@ -329,6 +329,7 @@ pub fn catalog_with_profile(
     let mut tool_filter = magi_tools::ToolFilter::All;
     let mut profile_grants = Vec::new();
     let mut role_preload: Vec<String> = Vec::new();
+    let mut role_thinking = None;
 
     if let Some(profile_name) = active_profile.as_deref()
         && let Some(profile) = profiles.iter().find(|p| p.name == profile_name)
@@ -341,7 +342,11 @@ pub fn catalog_with_profile(
             mode = m;
         }
         for (k, v) in role.helpers {
-            helpers.roles.insert(k, v);
+            if v.is_empty() {
+                helpers.roles.remove(&k);
+            } else {
+                helpers.roles.insert(k, v);
+            }
         }
         for g in role.ask {
             if !rules.ask.contains(&g) {
@@ -359,6 +364,7 @@ pub fn catalog_with_profile(
             )
         {
             wants.thinking = Some(parsed);
+            role_thinking = Some(parsed);
         }
         skill_allow = role.skills_allow;
         tool_filter = role.tools;
@@ -428,6 +434,7 @@ pub fn catalog_with_profile(
     catalog.base_model = asked(loaded, &catalog);
     catalog.active_profile = saved_profile;
     catalog.chosen = asked(loaded, &catalog);
+    profiles::finish_catalog(&mut catalog, role_thinking);
     Ok(catalog)
 }
 
@@ -538,6 +545,7 @@ fn watched_files() -> Vec<std::path::PathBuf> {
     for group in ["plugin", "after/plugin"] {
         out.extend(lua_files(&dir.join(group)));
     }
+    out.extend(profiles::md_files(&dir.join("profiles")));
 
     for name in ["apis.lua", "tools.lua", "providers.lua", "init.lua"] {
         let path = dir.join(name);

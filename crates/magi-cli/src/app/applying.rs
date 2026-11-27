@@ -65,6 +65,10 @@ impl App {
                 self.clear_workflows();
                 self.profile = None;
                 self.profiles.clear();
+                if self.picking == Some(Picking::Profile) {
+                    self.overlay = None;
+                    self.picking = None;
+                }
                 self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;
