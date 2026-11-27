@@ -110,11 +110,14 @@ fn run(case: &str, bwrap: bool) {
 async fn check(binary: &Path, bwrap: bool) {
     let fixture = Scratch::new("wr", if bwrap { "bwrap" } else { "landlock" });
     let roots = Roots::new(&fixture.join("work"), None, &fixture.join("config")).expect("roots");
-    let project = &roots.sources()[0].root;
+    let [project_src, agents_src, _] = roots.sources() else {
+        panic!("expected 3 default skill roots");
+    };
+    let project = &project_src.root;
     let source = source("review", "Private review", "PROJECT-PRIVATE-BODY");
     put(project, "review", &source);
     put(
-        &roots.sources()[1].root,
+        &agents_src.root,
         "review",
         &super::source("review", "Shadow", "NO-FALLBACK"),
     );

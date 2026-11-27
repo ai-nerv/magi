@@ -59,19 +59,94 @@ pub fn run(
     Ok(ran)
 }
 
-/// Every installed file, with what it holds right now — what `magi trust` acknowledges. Only the
-/// installed ones: the owner's own files never needed a digest, and an edit would look like change.
+/// Every installed file, with what it holds right now — what `magi acknowledge` hashes. Covers
+/// `plugin/*.lua`, `profiles/*.md`, and `skills/*/SKILL.md` inside installed packs.
 #[must_use]
 pub fn installed(roots: &Roots) -> Vec<(std::path::PathBuf, String)> {
-    runtimepath(roots)
+    let mut paths: Vec<std::path::PathBuf> = runtimepath(roots)
         .into_iter()
         .filter(|(_, trust)| trust.needs_acknowledging())
-        .filter_map(|(path, _)| {
+        .map(|(path, _)| path)
+        .collect();
+    paths.extend(magi_lua::plugins::pack_profiles(roots));
+    for skill_root in magi_lua::plugins::pack_skill_roots(roots) {
+        paths.extend(magi_lua::plugins::skill_files_in(&skill_root));
+    }
+    paths
+        .into_iter()
+        .filter_map(|path| {
             std::fs::read_to_string(&path)
                 .ok()
                 .map(|source| (path, source))
         })
         .collect()
+}
+
+/// Acknowledged `.md` profile files bundled inside installed packs (`site/pack/*/start/*/profiles/`).
+#[must_use]
+pub fn acknowledged_pack_profiles(roots: &Roots) -> Vec<std::path::PathBuf> {
+    let known = roots
+        .config
+        .as_ref()
+        .map(|config| acknowledged::recorded(&acknowledged::manifest_in(config)))
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for path in magi_lua::plugins::pack_profiles(roots) {
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !acknowledged::cleared(&known, &path, &source) {
+            eprintln!(
+                "magi: {}; run `magi acknowledge` to clear it",
+                acknowledged::Held {
+                    path: path.clone(),
+                    known: acknowledged::seen(&known, &path),
+                }
+            );
+            continue;
+        }
+        out.push(path);
+    }
+    out
+}
+
+/// Acknowledged `skills/` root directories inside installed packs (`site/pack/*/start/*/skills`).
+/// A pack skill root is included only when every `SKILL.md` inside it has been acknowledged.
+#[must_use]
+pub fn acknowledged_pack_skill_roots(roots: &Roots) -> Vec<std::path::PathBuf> {
+    let known = roots
+        .config
+        .as_ref()
+        .map(|config| acknowledged::recorded(&acknowledged::manifest_in(config)))
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for dir in magi_lua::plugins::pack_skill_roots(roots) {
+        let files = magi_lua::plugins::skill_files_in(&dir);
+        if files.is_empty() {
+            continue;
+        }
+        let mut all_ok = true;
+        for file in &files {
+            let Ok(source) = std::fs::read_to_string(file) else {
+                all_ok = false;
+                break;
+            };
+            if !acknowledged::cleared(&known, file, &source) {
+                eprintln!(
+                    "magi: {}; run `magi acknowledge` to clear it",
+                    acknowledged::Held {
+                        path: file.clone(),
+                        known: acknowledged::seen(&known, file),
+                    }
+                );
+                all_ok = false;
+            }
+        }
+        if all_ok {
+            out.push(dir);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -348,5 +423,46 @@ mod forgetting {
             acknowledged::recorded(&manifest).is_empty(),
             "the removed package is forgotten"
         );
+    }
+
+    #[test]
+    fn pack_bundled_profiles_and_skills_require_acknowledgement() {
+        let dir = Scratch::new("magi-ack-disc", "pack-assets");
+        let pkg = dir.join("site/pack/vendor/start/bundle");
+        std::fs::create_dir_all(pkg.join("profiles")).expect("mkdir profiles");
+        std::fs::create_dir_all(pkg.join("skills/lint")).expect("mkdir skills");
+        std::fs::write(
+            pkg.join("profiles/strict.md"),
+            "---\nmode: ask\n---\nStrict.\n",
+        )
+        .expect("write profile");
+        std::fs::write(
+            pkg.join("skills/lint/SKILL.md"),
+            "---\nname: lint\ndescription: lint code\n---\nRun clippy.\n",
+        )
+        .expect("write skill");
+
+        let roots = Roots {
+            config: Some(dir.join("config")),
+            site: Some(dir.join("site")),
+            project: None,
+        };
+        // Unacknowledged pack profiles & skills are held back.
+        assert!(acknowledged_pack_profiles(&roots).is_empty());
+        assert!(acknowledged_pack_skill_roots(&roots).is_empty());
+
+        // After `magi acknowledge`, both become available.
+        let manifest = acknowledged::manifest_in(&roots.config.clone().expect("config"));
+        acknowledged::acknowledge(&manifest, &installed(&roots)).expect("acknowledge");
+        assert_eq!(acknowledged_pack_profiles(&roots).len(), 1);
+        assert_eq!(acknowledged_pack_skill_roots(&roots).len(), 1);
+
+        // Editing a bundled skill invalidates its pack skill root until re-acknowledged.
+        std::fs::write(
+            pkg.join("skills/lint/SKILL.md"),
+            "---\nname: lint\ndescription: tampered\n---\nTampered.\n",
+        )
+        .expect("tamper");
+        assert!(acknowledged_pack_skill_roots(&roots).is_empty());
     }
 }

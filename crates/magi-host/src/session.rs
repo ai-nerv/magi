@@ -65,6 +65,10 @@ pub struct Session {
     /// Who is asked about what no rule covers, and on what terms; the gate keeps its own copy of
     /// what it acts on, and this is what every screen is shown.
     pub judging: magi_proto::judging::Judging,
+    profile: Option<String>,
+    profiles: Vec<(String, String)>,
+    plugin_status: Option<String>,
+    base_model: Option<String>,
 }
 
 impl Session {
@@ -111,6 +115,10 @@ impl Session {
             helpers_spent: std::sync::Arc::default(),
             unrecorded: false,
             judging: magi_proto::judging::Judging::default(),
+            profile: None,
+            profiles: Vec::new(),
+            plugin_status: None,
+            base_model: None,
         }
     }
 
@@ -731,6 +739,8 @@ pub fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
         }
     }
 }
+
+mod profile;
 
 #[cfg(test)]
 mod tests;

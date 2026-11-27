@@ -164,7 +164,43 @@ async fn handle(
 ) -> Result<(), String> {
     let missing = || Err(missing.to_owned());
     match request {
-        Request::Opening(entry) | Request::Tracked { entry, .. } => {
+        Request::Opening(mut entry) | Request::Tracked { mut entry, .. } => {
+            if let Entry::User {
+                ref mut text,
+                ref mut aside,
+                ref images,
+                ..
+            } = entry
+                && text.contains('/')
+                && let Some(worker) = worker
+            {
+                let outcome = worker
+                    .dispatch_command(Arc::clone(session), text.clone(), aside.clone())
+                    .await?;
+                if let Some(next_status) = outcome.status {
+                    session.lock().await.set_plugin_status(next_status);
+                }
+                if !outcome.notices.is_empty() {
+                    let held = session.lock().await;
+                    let cursor = held.cursor();
+                    let publisher = held.publisher();
+                    for notice in outcome.notices {
+                        let _ = publisher.send(HarnessEvent::Noticed {
+                            cursor,
+                            text: notice,
+                        });
+                    }
+                }
+                if outcome.handled
+                    || (outcome.matched && outcome.prompt.trim().is_empty() && images.is_empty())
+                {
+                    return Ok(());
+                }
+                if outcome.matched {
+                    *text = outcome.prompt;
+                    *aside = outcome.aside;
+                }
+            }
             match opening(session, entry).await? {
                 true => match worker {
                     Some(worker) => worker.run(Arc::clone(session)).await,

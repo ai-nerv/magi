@@ -36,6 +36,9 @@ pub struct App {
     pub thinking: String,
     /// Who is asked about what no rule covers, and on what terms, as the session last said.
     pub judging: magi_proto::judging::Judging,
+    pub profile: Option<String>,
+    pub profiles: Vec<(String, String)>,
+    pub plugin_status: Option<String>,
     /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
     pub provider: Option<String>,
     /// Which model answered each finished turn, as it was when the turn ended.
@@ -125,6 +128,8 @@ pub struct App {
     pub folded: std::collections::BTreeSet<String>,
     /// What each configured role is for, by name, for the agents view to say.
     pub about: std::collections::BTreeMap<String, String>,
+    /// Inline Lua `/command` entries `(name, description)` for `/` completion anywhere in a prompt.
+    pub commands: Vec<(String, String)>,
     /// Which program owns the model, asked for a model's card.
     pub mind: String,
     /// Which program offers the tools, asked for casper's float.
@@ -183,6 +188,9 @@ impl App {
             model: None,
             thinking: "off".to_owned(),
             judging: magi_proto::judging::Judging::default(),
+            profile: None,
+            profiles: Vec::new(),
+            plugin_status: None,
             provider: None,
             turn_models: std::collections::HashMap::new(),
             model_reasons: false,
@@ -230,6 +238,7 @@ impl App {
             sibling_hover: None,
             folded: std::collections::BTreeSet::new(),
             about: std::collections::BTreeMap::new(),
+            commands: Vec::new(),
             mind: "melchior".to_owned(),
             tools_program: "casper".to_owned(),
             reader: crate::attachments::Reader::default(),
@@ -509,12 +518,13 @@ impl App {
             return;
         };
         // `$` offers whoever is listening, read on the keystroke: a dead instance did not deregister.
-        let resolved = magi_tui::complete::resolve_workflows(
+        let resolved = magi_tui::complete::resolve_all(
             &line,
             col,
             list_paths,
             &|_| self.reachable.iter().map(|them| them.id.clone()).collect(),
             if row == 0 { &self.workflows } else { &[] },
+            &self.commands,
         );
         self.overlay = resolved
             .filter(|found| {

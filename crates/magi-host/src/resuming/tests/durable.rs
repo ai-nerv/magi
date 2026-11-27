@@ -40,6 +40,8 @@ async fn late_helper_is_durable_only_in_a_before_b_is_published() {
     )));
     let mind = Mind::answering("resume-late-helper", &json!({"ops":[{"op":"add","title":"Only A","text":"Only A uses Rust.","description":"A language","pinned":false}]}).to_string());
     let mut backend = crate::turn::Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),
@@ -56,6 +58,8 @@ async fn late_helper_is_durable_only_in_a_before_b_is_published() {
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: Default::default(),
         helpers: Default::default(),
         deciders: Vec::new(),

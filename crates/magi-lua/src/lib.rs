@@ -6,9 +6,11 @@
 
 pub mod acknowledged;
 pub mod client;
+pub mod commands;
 mod convert;
 mod engine;
 mod fs;
+pub mod hooks;
 mod json;
 pub mod peer;
 pub mod plugins;
@@ -21,6 +23,7 @@ pub use engine::{
     Config, Engine, balthasar_at, coordinator_at, name_coordinator, name_roles, name_session,
     roles, session,
 };
+pub use hooks::LuaHook;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LuaError {

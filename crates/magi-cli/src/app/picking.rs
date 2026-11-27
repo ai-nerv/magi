@@ -8,6 +8,7 @@ use magi_proto::{ToolCallId, UiCommand};
 pub enum Picking {
     Model,
     Thinking,
+    Profile,
     Session {
         rows: Vec<(String, String)>,
     },
@@ -64,6 +65,7 @@ impl crate::app::App {
             }
             // No recorded purpose, so nothing here opened it and nothing goes.
             Some(Picking::Model) => UiCommand::SetModel { name: value },
+            Some(Picking::Profile) => UiCommand::SetProfile { name: value },
             // Matched back by position: a row is labelled to be read, not by id.
             Some(Picking::Session { rows } | Picking::Archived { rows }) => {
                 let found = rows

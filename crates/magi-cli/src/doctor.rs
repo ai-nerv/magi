@@ -73,6 +73,30 @@ fn report() -> String {
         "standing grants",
         &crate::config::granted(&loaded).len().to_string(),
     );
+    let profiles = crate::config::profiles::all(&loaded);
+    let default_profile = crate::config::profiles::default_name(&loaded);
+    if !profiles.is_empty() {
+        let names: Vec<String> = profiles
+            .iter()
+            .map(|p| {
+                if default_profile.as_deref() == Some(p.name.as_str()) {
+                    format!("{} (default)", p.name)
+                } else {
+                    p.name.clone()
+                }
+            })
+            .collect();
+        row(&mut out, "profiles", &names.join(", "));
+    }
+    if !loaded.config.commands.is_empty() {
+        let names: Vec<String> = loaded
+            .config
+            .commands
+            .iter()
+            .map(|(n, _)| format!("/{n}"))
+            .collect();
+        row(&mut out, "commands", &names.join(", "));
+    }
     row(
         &mut out,
         "environment",

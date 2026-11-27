@@ -6,12 +6,17 @@ use super::{Loaded, remembered};
 /// tried first, not preferred: one that no longer resolves must not disable a working configuration.
 pub(super) fn chosen(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> Option<String> {
     let usable = |name: &str| catalog.backend(name).map(|backend| backend.model);
-    // A role's own model first: a child in its lead's directory would otherwise take the model the
-    // lead remembered there.
-    super::agents::own(loaded)
-        .and_then(|role| role.model)
-        .as_deref()
+    // An active profile's model first, then a role's own model, then remembered, then global default.
+    catalog
+        .active_profile_ref()
+        .and_then(|profile| profile.model.as_deref())
         .and_then(usable)
+        .or_else(|| {
+            super::agents::own(loaded)
+                .and_then(|role| role.model)
+                .as_deref()
+                .and_then(usable)
+        })
         .or_else(|| remembered().model.as_deref().and_then(usable))
         .or_else(|| super::main_model(loaded).and_then(usable))
 }
@@ -20,6 +25,11 @@ pub(super) fn chosen(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> 
 /// will, otherwise the first name asked for, so `Catalog::unusable` has a name to give a reason about.
 pub(super) fn asked(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> Option<String> {
     chosen(loaded, catalog)
+        .or_else(|| {
+            catalog
+                .active_profile_ref()
+                .and_then(|profile| profile.model.clone())
+        })
         .or_else(|| super::agents::own(loaded).and_then(|role| role.model))
         .or_else(|| remembered().model)
         .or_else(|| super::main_model(loaded).map(ToOwned::to_owned))

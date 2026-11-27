@@ -311,6 +311,8 @@ impl App {
             reasons: self.model_reasons,
             thinking_controls: !self.thinking_levels().is_empty(),
             thinking: &self.thinking,
+            profile: self.profile.as_deref(),
+            has_profiles: !self.profiles.is_empty(),
             provider: self.provider.as_deref(),
             billing,
             modalities: modalities.as_deref(),
@@ -547,7 +549,11 @@ impl App {
 
     /// Open who is asked about what no rule allows, and on what terms.
     pub fn show_permission(&mut self) {
-        let drawn = magi_tui::permission::view(&self.judging, card_width());
+        let drawn = magi_tui::permission::view_with_profile(
+            &self.judging,
+            self.profile.as_deref(),
+            card_width(),
+        );
         let on = self
             .pane
             .as_ref()
@@ -666,6 +672,11 @@ impl App {
             "switch" => {
                 self.pane = None;
                 self.open_model_picker();
+                None
+            }
+            "profile" => {
+                self.pane = None;
+                self.open_profile_picker();
                 None
             }
             "login" => {

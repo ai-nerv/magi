@@ -13,7 +13,7 @@ pub struct Source {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roots {
-    sources: [Source; 3],
+    sources: Vec<Source>,
 }
 
 impl Roots {
@@ -22,7 +22,7 @@ impl Roots {
         wire::path(config_home)?;
         let workspace = workspace.map_or_else(|| launch.to_owned(), |path| launch.join(path));
         wire::path(&workspace)?;
-        let sources = [
+        let sources = vec![
             Source {
                 class: SourceClass::Project,
                 root: workspace.join(".magi/skills"),
@@ -42,7 +42,20 @@ impl Roots {
         Ok(Self { sources })
     }
 
-    pub fn sources(&self) -> &[Source; 3] {
+    /// Append additional validated user-level skill roots (e.g. acknowledged installed packs),
+    /// searched at lower precedence than project and `~/.config/magi/skills`.
+    pub fn with_extra_user_roots(mut self, extras: &[PathBuf]) -> Result<Self, Error> {
+        for root in extras {
+            wire::path(root)?;
+            self.sources.push(Source {
+                class: SourceClass::User,
+                root: root.clone(),
+            });
+        }
+        Ok(self)
+    }
+
+    pub fn sources(&self) -> &[Source] {
         &self.sources
     }
 }

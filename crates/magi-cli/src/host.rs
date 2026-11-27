@@ -16,6 +16,7 @@ pub struct Named<'a> {
     pub run: Option<&'a str>,
     pub agent: Option<&'a str>,
     pub load: Option<&'a str>,
+    pub profile: Option<&'a str>,
 }
 
 /// What a headless child reports from: the session's status, and what each model has cost it.
@@ -38,6 +39,7 @@ pub async fn start(
         run,
         agent,
         load,
+        profile,
     } = named;
     let required = load.is_some();
     let resume = load.map(|id| Some(id.to_owned())).or(resume);
@@ -105,11 +107,42 @@ pub async fn start(
 
     // Asked once and handed to the session; melchior owns the catalog.
     let mut catalog = match loaded {
-        Some(loaded) => crate::config::catalog(
+        Some(loaded) => match crate::config::catalog_with_profile(
             loaded,
             magi_host::broker::cards(&crate::config::mind(loaded)).await,
-        ),
-        None => magi_host::catalog::Catalog::empty(),
+            profile,
+        ) {
+            Ok(catalog) => catalog,
+            Err(why) => {
+                drop(listener);
+                done(socket);
+                anyhow::bail!("{why}");
+            }
+        },
+        None => {
+            let empty = crate::config::Loaded {
+                config: magi_lua::Config::default(),
+                tools: Vec::new(),
+                clients: Vec::new(),
+            };
+            let dropins = crate::config::profiles::all(&empty);
+            if dropins.is_empty() && profile.is_none() {
+                magi_host::catalog::Catalog::empty()
+            } else {
+                match crate::config::catalog_with_profile(
+                    &empty,
+                    magi_host::broker::cards(&crate::config::mind(&empty)).await,
+                    profile,
+                ) {
+                    Ok(catalog) => catalog,
+                    Err(why) => {
+                        drop(listener);
+                        done(socket);
+                        anyhow::bail!("{why}");
+                    }
+                }
+            }
+        }
     };
     let mut backend = crate::config::backend(&catalog);
     let mut environ = environ.clone();

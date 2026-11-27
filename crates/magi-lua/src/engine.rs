@@ -11,12 +11,10 @@ use std::rc::Rc;
 #[derive(Debug, Default, Clone)]
 pub struct Config {
     pub settings: serde_json::Map<String, serde_json::Value>,
-    /// What a config said that magi did not keep, and why, in the order it said it: a declaration
-    /// for something magi does not own, or a setting too deeply nested to describe as JSON.
     pub unkept: Vec<String>,
-    /// Files `magi.load` asked for, in the order it asked. Collected rather than run on the spot,
-    /// since a file already asked for is not queued twice and a diamond of loads terminates.
     pub loads: Vec<String>,
+    pub commands: Vec<(String, String)>,
+    pub scripts: Vec<(String, String)>,
 }
 
 impl Config {
@@ -209,6 +207,14 @@ impl Engine {
         self.run_within(source, chunk, budget)
     }
 
+    pub(crate) fn run_call_budget(&mut self, source: &str, chunk: &str) -> Result<(), LuaError> {
+        self.run_within(source, chunk, CALL_BUDGET)
+    }
+
+    pub(crate) fn enter<R>(&mut self, f: impl for<'gc> FnOnce(luna::Context<'gc>) -> R) -> R {
+        self.lua.enter(f)
+    }
+
     /// Run one chunk on at most `budget` fuel. A chunk that spends it, or outgrows the memory
     /// limit, is stopped and reported as failing.
     fn run_within(&mut self, source: &str, chunk: &str, budget: i64) -> Result<(), LuaError> {
@@ -359,6 +365,22 @@ impl Engine {
             });
             magi.set(ctx, "watch", watch).ok();
 
+            let hooks = Table::new(&ctx);
+            ctx.set_global(crate::hooks::HOOKS, hooks);
+            let hook = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                let (name, spec): (Value, Value) = stack.consume(ctx)?;
+                let (Value::String(name), Value::Table(_)) = (name, spec) else {
+                    return Err(raise(ctx, "magi.hook(name, spec): a name and a table"));
+                };
+                if let Value::Table(hooks) = ctx.get_global_value(crate::hooks::HOOKS) {
+                    hooks.set(ctx, name, spec).ok();
+                }
+                stack.replace(ctx, ());
+                Ok(CallbackReturn::Return)
+            });
+            magi.set(ctx, "hook", hook).ok();
+            crate::commands::install(ctx, magi);
+
             // The path of the running binary, so a config can name a peer magi ships. It is a
             // multi-call binary, and `command = "magi"` finds whichever copy the shell sees.
             if let Ok(exe) = std::env::current_exe() {
@@ -428,6 +450,8 @@ impl Engine {
                 }
             }
         });
+        let commands = crate::commands::list(self);
+        self.config.borrow_mut().commands = commands;
     }
 }
 
@@ -450,6 +474,14 @@ const REFUSED_TO_PROJECTS: &[(&str, &str)] = &[
     (
         "watch",
         "a watcher runs after every tool call, so only your own configuration can add one",
+    ),
+    (
+        "hook",
+        "a hook runs around every tool call, so only your own configuration can add one",
+    ),
+    (
+        "command",
+        "a command runs inside the session VM, so only your own configuration can add one",
     ),
     (
         "load",
@@ -742,6 +774,16 @@ impl Engine {
     /// other path lends nothing and `magi.fs.write` says so rather than writing.
     pub fn attach_ops(&mut self, ops: Rc<dyn magi_tools::Ops>) {
         *self.lent.borrow_mut() = Some(ops);
+    }
+
+    /// Sorted `(name, description)` of all inline `/command` registrations in this VM.
+    pub fn commands(&mut self) -> Vec<(String, String)> {
+        crate::commands::list(self)
+    }
+
+    /// Whether any runtime Lua callbacks (`magi.hook` or `magi.command`) were registered.
+    pub fn has_runtime_callbacks(&mut self) -> bool {
+        crate::hooks::has_any(self) || crate::commands::has_any(self)
     }
 }
 

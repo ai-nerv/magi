@@ -137,6 +137,8 @@ fn approver(mode: &str, answer: &Arc<Answer>, root: &Path) -> Option<Arc<dyn App
 
 fn backend(mind: &Mind, root: &Path, mode: &str) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: vec![(
             "private-fixture.lua".into(),
             r#"
@@ -172,6 +174,8 @@ fn backend(mind: &Mind, root: &Path, mode: &str) -> Backend {
         system: None,
         confine: mode == "confined",
         isolate: false,
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         grants: if matches!(mode, "standing" | "override") {
             vec![Grant {
                 verb: "write".into(),

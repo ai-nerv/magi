@@ -9,6 +9,7 @@ pub use magi_proto::permit::{Action, Decision, Grant, Lifetime, Scope};
 #[derive(Debug, Default, Clone)]
 pub struct Ledger {
     grants: Vec<Grant>,
+    profile_grants: Vec<Grant>,
 }
 
 impl Ledger {
@@ -21,7 +22,24 @@ impl Ledger {
     /// A ledger holding grants a configuration already made.
     #[must_use]
     pub fn with(grants: Vec<Grant>) -> Self {
-        Self { grants }
+        Self {
+            grants,
+            profile_grants: Vec::new(),
+        }
+    }
+
+    /// A ledger holding standing session grants plus ephemeral active-profile grants.
+    #[must_use]
+    pub fn with_profile(grants: Vec<Grant>, profile_grants: Vec<Grant>) -> Self {
+        Self {
+            grants,
+            profile_grants,
+        }
+    }
+
+    /// Replace the ephemeral grants supplied by the active profile.
+    pub fn set_profile_grants(&mut self, grants: Vec<Grant>) {
+        self.profile_grants = grants;
     }
 
     /// Take on grants somebody else already holds, for a session that has been adopted: it may do
@@ -34,7 +52,22 @@ impl Ledger {
     /// Whether `action` is already covered, so nobody need be asked.
     #[must_use]
     pub fn allows(&self, action: &Action) -> bool {
-        self.grants.iter().any(|g| g.covers(action))
+        if let Action::Run { command, .. } = action {
+            if self.profile_grants.is_empty() {
+                return crate::bash::covers_run(&self.grants, command);
+            }
+            let combined: Vec<Grant> = self
+                .grants
+                .iter()
+                .chain(&self.profile_grants)
+                .cloned()
+                .collect();
+            return crate::bash::covers_run(&combined, command);
+        }
+        self.grants
+            .iter()
+            .chain(&self.profile_grants)
+            .any(|g| g.covers(action))
     }
 
     /// Record what was decided about `action`. A refusal records nothing — it is an answer about
@@ -55,6 +88,16 @@ impl Ledger {
     #[must_use]
     pub fn persistent(&self) -> &[Grant] {
         &self.grants
+    }
+
+    /// Standing session grants plus ephemeral active-profile grants (for enforcement and jail setup).
+    #[must_use]
+    pub fn active_grants(&self) -> Vec<Grant> {
+        self.grants
+            .iter()
+            .chain(&self.profile_grants)
+            .cloned()
+            .collect()
     }
 
     /// The widths a person should be offered for this action, narrow first, because the list is
@@ -270,5 +313,28 @@ mod tests {
     fn a_parent_of_a_top_level_path_is_the_root() {
         assert_eq!(parent_of("/etc"), Some("/".to_owned()));
         assert_eq!(parent_of("/"), None);
+    }
+
+    #[test]
+    fn profile_grants_apply_while_active_and_never_leak_into_persistent() {
+        let base = vec![Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: "git".to_owned(),
+            },
+        }];
+        let extra = vec![Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: "cargo".to_owned(),
+            },
+        }];
+        let mut ledger = Ledger::with_profile(base.clone(), extra);
+        assert!(ledger.allows(&run("git status && cargo test")));
+        assert_eq!(ledger.persistent(), base.as_slice());
+
+        ledger.set_profile_grants(Vec::new());
+        assert!(ledger.allows(&run("git status")));
+        assert!(!ledger.allows(&run("cargo test")));
     }
 }

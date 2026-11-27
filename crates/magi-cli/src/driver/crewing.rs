@@ -4,6 +4,13 @@
 use crate::app::App;
 use magi_proto::UiCommand;
 use magi_tui::footer::FooterData;
+
+/// Session-launch options for [`super::run`].
+pub struct Launch {
+    pub attach: Option<String>,
+    pub view_only: bool,
+    pub profile: Option<String>,
+}
 use tokio::sync::{mpsc, watch};
 
 /// Send a command to whichever session is on screen: attaching is driving, and `--view-only` is
@@ -107,9 +114,16 @@ pub(super) async fn ours(
 /// The model's name, with the mode beside it when it is not the one a session starts in: asking
 /// every time is what nobody needs telling, and anything else is what they should see at a glance.
 fn moded(app: &App, model: String) -> String {
+    let mut label = model;
+    if let Some(profile) = &app.profile {
+        label = format!("{label} · {profile}");
+    }
+    if let Some(status) = app.plugin_status.as_deref().filter(|s| !s.is_empty()) {
+        label = format!("{label} · {status}");
+    }
     match app.judging.mode {
-        magi_proto::judging::Mode::Ask => model,
-        mode => format!("{model} · {}", mode.name()),
+        magi_proto::judging::Mode::Ask => label,
+        mode => format!("{label} · {}", mode.name()),
     }
 }
 

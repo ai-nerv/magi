@@ -17,6 +17,10 @@ override something you did not write.
 ~/.config/<program>/after/plugin/yours.lua                     the last word
 ```
 
+For `magi`, an installed package under `~/.local/share/magi/site/pack/*/start/*/` may also bundle
+`profiles/*.md` and `skills/<name>/SKILL.md` alongside `plugin/*.lua`. All three are hashed and
+gated by `magi acknowledge`, and load beneath your own `~/.config/magi/` files so local overrides win.
+
 `<program>` is `magi`, `casper`, `melchior` or `balthasar`. Make the directory if it is not
 there. Nothing else needs telling: there is no registration and no entry point to edit.
 
@@ -159,6 +163,45 @@ checks retain their meaning. The structured-answer schema is a separate setting.
 ```lua
 magi.watch("name", { run = function(event) … end })
 ```
+
+### magi — a hook (tools & turns)
+
+```lua
+magi.hook("name", {
+  tools = { "shell", "edit" },           -- optional filter for tool hooks; omit for all tools
+  before = function(tool, args)          -- return { deny = "reason" } or { args = rewritten }
+    …
+  end,
+  after = function(tool, args, out)      -- return string or { content = …, is_error = … }
+    …
+  end,
+  before_turn = function(ctx)            -- ctx = { model, profile, iteration, prompt }
+    return { system = "extra prompt", notice = "optional notice", status = "tag" }
+  end,
+  after_turn = function(ctx)             -- ctx = { model, profile, iteration, text, ok, cancelled }
+    return { continue = "follow-up prompt", aside = "…", notice = "…", status = false }
+  end,
+})
+```
+
+### magi — an inline `/command`
+
+```lua
+magi.command("goal", {
+  description = "Keep working autonomously until complete",
+  run = function(ctx)                    -- ctx = { name, args, prompt, cleaned, aside, profile, model }
+    return {
+      prompt = ctx.cleaned,              -- optional rewritten prompt (defaults to ctx.cleaned)
+      aside = "…",                       -- optional turn instructions beside the prompt
+      notice = "…",                      -- optional UI notice
+      status = "goal 1/12",              -- optional footer status pill (string sets, false/"" clears)
+      handled = false,                   -- true handles locally without calling the model
+    }
+  end,
+})
+```
+
+Inline `/command` tokens work anywhere inside a prompt in insert mode (e.g. `"fix tests /goal"` or `"/goal stop"`), complete on `/`, and share VM state with `magi.hook`. See `examples/plugin/goal.lua`.
 
 Told after the fact, answered with nothing: a watcher cannot change a result and cannot fail one.
 Branch on `event.kind` and nothing else — a watcher written when there was one kind of event

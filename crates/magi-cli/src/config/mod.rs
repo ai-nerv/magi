@@ -33,7 +33,12 @@ pub fn load() -> Result<Loaded, LuaError> {
                 "no configuration; run `make configs` to install it",
             ),
         })?;
-    engine.run_file(&entry)?;
+    let init_source = std::fs::read_to_string(&entry).map_err(|source| LuaError::Io {
+        file: entry.display().to_string(),
+        source,
+    })?;
+    engine.run(&init_source, &entry.display().to_string())?;
+    let init_has_callbacks = engine.has_runtime_callbacks();
 
     // Read before anything is borrowed and before any tool description runs: a role names the
     // program magi asks for a client library, and a tool description opens that library as it
@@ -120,7 +125,10 @@ pub fn load() -> Result<Loaded, LuaError> {
             project::apply(&mut engine, &local)?;
         }
     }
-    let config = events::harvest(&mut engine, &cwd)?;
+    let mut config = events::harvest(&mut engine, &cwd)?;
+    if init_has_callbacks {
+        config.scripts.push(("init.lua".to_owned(), init_source));
+    }
 
     // Everything a config said that magi did not keep, whoever said it; both cases were silent before.
     for said in &config.unkept {
@@ -280,41 +288,176 @@ pub fn memory(loaded: &Loaded) -> String {
 
 /// Everything the daemon could talk to, so `:model` has something to pick among. Built once at start
 /// rather than re-read on each switch. The cards come from melchior, which owns them.
+#[cfg(test)]
 #[must_use]
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
+    catalog_with_profile(loaded, cards, None)
+        .unwrap_or_else(|_| magi_host::catalog::Catalog::empty())
+}
+
+/// Same as [`catalog`], validating and activating an explicit `--profile <NAME>` (or
+/// `magi.default_profile` on top-level sessions, or `magi.agents.<role>` policy on child sessions).
+pub fn catalog_with_profile(
+    loaded: &Loaded,
+    cards: Vec<magi_proto::ask::Card>,
+    requested_profile: Option<&str>,
+) -> Result<magi_host::catalog::Catalog, String> {
+    let base_system = system(loaded);
+    let profiles = profiles::all(loaded);
+    let is_child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
+    let active_profile = match requested_profile.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(name) => {
+            if !profiles.iter().any(|p| p.name == name) {
+                let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+                return Err(if names.is_empty() {
+                    format!("unknown profile {name:?}: no profiles are configured")
+                } else {
+                    format!("unknown profile {name:?}. Available: {}", names.join(", "))
+                });
+            }
+            Some(name.to_owned())
+        }
+        None if !is_child => remembered()
+            .profile
+            .filter(|name| profiles.iter().any(|p| &p.name == name))
+            .or_else(|| match profiles::default_name(loaded) {
+                Some(name) if profiles.iter().any(|p| p.name == name) => Some(name),
+                Some(missing) => {
+                    eprintln!(
+                        "magi: `magi.default_profile` names unknown profile {missing:?} (ignored)"
+                    );
+                    None
+                }
+                None => None,
+            }),
+        None => None,
+    };
+
+    let (mut mode, mut rules) = settings::judging(loaded);
+    let mut wants = options(loaded);
+    let mut helpers = settings::helpers(loaded);
+    let mut skill_allow = None;
+    let mut tool_filter = magi_tools::ToolFilter::All;
+    let mut profile_grants = Vec::new();
+    let mut role_preload: Vec<String> = Vec::new();
+    let mut role_thinking = None;
+
+    if let Some(profile_name) = active_profile.as_deref()
+        && let Some(profile) = profiles.iter().find(|p| p.name == profile_name)
+    {
+        skill_allow.clone_from(&profile.skills_allow);
+        tool_filter = profile.effective_tool_filter();
+        profile_grants.clone_from(&profile.allow);
+    } else if let Some(role) = agents::own(loaded) {
+        if let Some(m) = role.mode {
+            mode = m;
+        }
+        for (k, v) in role.helpers {
+            if v.is_empty() {
+                helpers.roles.remove(&k);
+            } else {
+                helpers.roles.insert(k, v);
+            }
+        }
+        for g in role.ask {
+            if !rules.ask.contains(&g) {
+                rules.ask.push(g);
+            }
+        }
+        for g in role.deny {
+            if !rules.deny.contains(&g) {
+                rules.deny.push(g);
+            }
+        }
+        if let Some(level) = role.thinking.as_deref()
+            && let Ok(parsed) = serde_json::from_value::<magi_model::ThinkingLevel>(
+                serde_json::Value::String(level.to_owned()),
+            )
+        {
+            wants.thinking = Some(parsed);
+            role_thinking = Some(parsed);
+        }
+        skill_allow = role.skills_allow;
+        tool_filter = role.tools;
+        if !role.delegate {
+            tool_filter = tool_filter.without("spawn");
+        }
+        profile_grants = if is_child {
+            let parent: Vec<magi_proto::permit::Grant> = std::env::var(magi_tools::builtin::GRANTS)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            magi_proto::permit::narrow(&role.allow, &parent)
+        } else {
+            role.allow
+        };
+        role_preload = role.skills_preload;
+    }
+
+    let tooling = tooling(loaded);
+    for profile in &profiles {
+        if let Some(allowed) = &profile.agents {
+            for agent in allowed {
+                if !tooling.kinds.iter().any(|k| &k.name == agent) {
+                    eprintln!(
+                        "magi: profile {:?} lists unknown agent {:?} in `agents`",
+                        profile.name, agent
+                    );
+                }
+            }
+        }
+    }
     let mut catalog = magi_host::catalog::Catalog {
+        scripts: loaded.config.scripts.clone(),
         mind: mind(loaded),
         memory: memory(loaded),
-        tooling: tooling(loaded),
+        tooling,
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
         workflow_workspace: loaded.config.string("workflow_workspace").map(Into::into),
+        skill_roots: discovered::acknowledged_pack_skill_roots(
+            &magi_lua::plugins::Roots::discovered(&std::env::current_dir().unwrap_or_default()),
+        ),
         cards,
-        wants: options(loaded),
-        system: system(loaded),
+        wants,
+        system: base_system.clone(),
+        base_system,
+        base_model: None,
         grants: grants(loaded),
-        mode: settings::judging(loaded).0,
-        rules: settings::judging(loaded).1,
+        mode,
+        rules,
         environ: environ(loaded),
         chosen: None,
         transcript: None,
-        helpers: settings::helpers(loaded),
+        helpers,
         confine: loaded.config.boolean("confine").unwrap_or(false),
-        // On by default: every session's tool commands run in the kernel jail, the network kept
-        // open (it is essential) and the filesystem contained. A privileged setting, so a project
-        // cannot turn it off; the machine config can with `magi.isolation = false`.
         isolate: loaded.config.boolean("isolation").unwrap_or(true),
+        profiles,
+        active_profile,
+        skill_allow,
+        tool_filter,
+        profile_grants,
+        preloaded_skills: role_preload
+            .into_iter()
+            .map(|name| (name, String::new()))
+            .collect(),
     };
-    // After the cards: resolving what was asked for needs something to resolve it against.
+    // Resolve base_model without any active profile so switching to a profile without `model`
+    // (or `default`) returns to the configured/remembered base model rather than leaking.
+    let saved_profile = catalog.active_profile.take();
+    catalog.base_model = asked(loaded, &catalog);
+    catalog.active_profile = saved_profile;
     catalog.chosen = asked(loaded, &catalog);
-    catalog
+    profiles::finish_catalog(&mut catalog, role_thinking);
+    Ok(catalog)
 }
 
 pub mod agents;
 pub(crate) mod chosen;
 mod discovered;
 mod lent;
+pub mod profiles;
 pub mod project;
 pub mod roles;
 use chosen::asked;
@@ -417,6 +560,7 @@ fn watched_files() -> Vec<std::path::PathBuf> {
     for group in ["plugin", "after/plugin"] {
         out.extend(lua_files(&dir.join(group)));
     }
+    out.extend(profiles::md_files(&dir.join("profiles")));
 
     for name in ["apis.lua", "tools.lua", "providers.lua", "init.lua"] {
         let path = dir.join(name);
@@ -559,23 +703,6 @@ mod pinning_tests {
             magi_tools::supplier::located("magi-no-such-tool"),
             "magi-no-such-tool"
         );
-    }
-}
-
-#[cfg(test)]
-mod mind_tests {
-    use super::*;
-    use magi_lua::Engine;
-
-    fn from(source: &str) -> Loaded {
-        let mut engine = Engine::new();
-        engine.run(source, "test").expect("config");
-        engine.harvest();
-        Loaded {
-            config: engine.config(),
-            tools: Vec::new(),
-            clients: Vec::new(),
-        }
     }
 
     #[test]

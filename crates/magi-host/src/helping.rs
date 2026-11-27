@@ -605,25 +605,11 @@ mod tests {
 
     pub(super) fn backend(mind: &magi_testkit::Mind, helpers: Helpers) -> Backend {
         Backend {
-            tools: Vec::new(),
-            clients: Vec::new(),
-            tooling: magi_tools::supplier::Tooling::default(),
             cwd: std::env::temp_dir(),
-            grants: Vec::new(),
-            environ: std::collections::BTreeMap::new(),
-            confine: false,
-            isolate: false,
             model: "main/model".into(),
             mind: mind.program().display().to_string(),
-            wants: magi_proto::ask::Wants::default(),
-            context_window: None,
-            max_output: None,
-            image_resize: None,
-            session_identity: false,
-            transcript: None,
-            system: None,
             helpers,
-            deciders: Vec::new(),
+            ..Backend::default()
         }
     }
 

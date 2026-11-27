@@ -344,6 +344,7 @@ pub fn handle(
         // themselves are text a prompt has to hold, and every other modifier is spoken for.
         KeyCode::Char(',') if alt => return Action::Crew { forward: false },
         KeyCode::Char('.') if alt => return Action::Crew { forward: true },
+        KeyCode::Char('p') if alt => return Action::Command(":profile next".to_owned()),
         _ => {}
     }
 

@@ -250,6 +250,70 @@ fn a_command_a_deny_rule_cannot_read_for_certain_is_the_persons() {
 }
 
 #[test]
+fn quoted_text_does_not_trigger_deny_rule_while_compound_commands_do() {
+    let rules = Rules {
+        deny: vec![rule("run", "rm")],
+        ask: Vec::new(),
+    };
+    let person = Person::who(true);
+    let gate = gate(Mode::Auto, Some(true), &person, rules);
+    assert!(
+        !gate.overrides(&run(r#"git commit -m "rm -rf / && sudo""#)),
+        "quoted rm in a commit message is data, not a command"
+    );
+    assert!(
+        allowed(&gate.ask("shell", &run(r#"git commit -m "rm -rf /""#))),
+        "auto mode approves a commit message mentioning rm"
+    );
+    assert_eq!(person.times(), 0);
+    assert!(
+        !allowed(&gate.ask("shell", &run("git diff && /bin/rm -rf tmp"))),
+        "compound command invoking /bin/rm is still refused"
+    );
+    assert_eq!(person.times(), 0);
+}
+
+#[test]
+fn profile_overlay_adds_rules_without_weakening_global_deny_and_clears_cleanly() {
+    let base = Rules {
+        deny: vec![rule("run", "rm")],
+        ask: Vec::new(),
+    };
+    let standing = Arc::new(Standing::starting(Mode::Auto));
+    let person = Person::who(true);
+    let gate = Judged::new(
+        Arc::clone(&person) as Arc<dyn Approver>,
+        Arc::new(Says(Some(true))),
+        Arc::clone(&standing),
+        base,
+        std::path::Path::new("/w/project"),
+        Box::new(|_| {}),
+    );
+    assert!(allowed(&gate.ask("write", &write("/w/project/src/a.rs"))));
+
+    // Activate planner-style overlay denying writes.
+    standing.set_overlay(Rules {
+        deny: vec![Grant {
+            verb: "write".into(),
+            scope: Scope::Anything,
+        }],
+        ask: vec![rule("run", "git")],
+    });
+    assert!(!allowed(&gate.ask("write", &write("/w/project/src/a.rs"))));
+    assert!(
+        !allowed(&gate.ask("shell", &run("rm -rf tmp"))),
+        "global deny still holds"
+    );
+    assert!(gate.overrides(&run("git push")));
+
+    // Clear overlay: writes allowed again, global deny still holds.
+    standing.set_overlay(Rules::default());
+    assert!(allowed(&gate.ask("write", &write("/w/project/src/a.rs"))));
+    assert!(!allowed(&gate.ask("shell", &run("rm -rf tmp"))));
+    assert!(!gate.overrides(&run("git push")));
+}
+
+#[test]
 fn edits_lets_a_write_into_the_project_through_and_nothing_else() {
     let person = Person::who(false);
     let gate = gate(Mode::Edits, None, &person, Rules::default());

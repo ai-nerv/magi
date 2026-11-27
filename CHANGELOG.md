@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.8.5] - 2026-11-27
+
+### <!-- 0 -->⛰️  Features
+
+- Pack-bundled profiles/skills, Lua footer status pill, break config<->rules cycle
+- Add inline /commands, turn lifecycle hooks, profile persistence, and card UX
+- Add higher-level session profiles with live switching, tool/skill filters, and permission overlays
+- Add partial cancel output, Lua tool hooks, and tree-sitter bash permissions
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Wire profile write grants to jail, follow dotfile symlinks, and harden frontmatter/Lua parsing
+- Prevent mode/model leaks, clamp thinking, harden parsing, and clear stale TUI state
+
+### <!-- 2 -->🚜 Refactor
+
+- Use rune for in-process shell permission parsing
+
+### Profiles
+
+- Harden resume/lag sync, model/thinking/helper overrides, normal-mode alt+p, and strict spawn schema
+
 ## [0.8.4] - 2026-11-25
 
 ### <!-- 0 -->⛰️  Features

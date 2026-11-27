@@ -139,6 +139,16 @@ impl Trace {
                     .map_or_else(|| "none".to_owned(), |m| m.name.clone()),
                 detail: String::new(),
             },
+            HarnessEvent::PluginStatus { text, .. } => Row {
+                kind: Kind::Model,
+                what: format!("status {}", text.as_deref().unwrap_or("cleared")),
+                detail: String::new(),
+            },
+            HarnessEvent::ProfileChanged { profile, .. } => Row {
+                kind: Kind::Model,
+                what: format!("profile {}", profile.as_deref().unwrap_or("default")),
+                detail: String::new(),
+            },
             HarnessEvent::Error { class, message, .. } => Row {
                 kind: Kind::Error,
                 what: format!("{class:?}").to_lowercase(),

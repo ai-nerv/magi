@@ -96,9 +96,10 @@ async fn exercise(bwrap: bool) {
     let workspace = fixture.join("worktree/nested");
     let config = fixture.join("config");
     let roots = Roots::new(&workspace, None, &config).expect("roots");
-    let project = &roots.sources()[0].root;
-    let agents = &roots.sources()[1].root;
-    let user = &roots.sources()[2].root;
+    let [project, agents, user] = roots.sources() else {
+        panic!("expected 3 default skill roots");
+    };
+    let (project, agents, user) = (&project.root, &agents.root, &user.root);
     let text = source(
         "review",
         "Révision 日本語",

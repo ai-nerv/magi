@@ -63,6 +63,14 @@ impl App {
             } => {
                 self.session_id = Some(session.to_string());
                 self.clear_workflows();
+                self.profile = None;
+                self.profiles.clear();
+                self.plugin_status = None;
+                if self.picking == Some(Picking::Profile) {
+                    self.overlay = None;
+                    self.picking = None;
+                }
+                self.refresh_views();
                 self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;
@@ -257,6 +265,23 @@ impl App {
                 }
                 self.judging = judging;
                 self.refresh_views();
+            }
+            HarnessEvent::ProfileChanged {
+                profile, profiles, ..
+            } => {
+                if self.profile != profile {
+                    self.clear_workflows();
+                }
+                self.profile = profile;
+                self.profiles = profiles;
+                if self.picking == Some(Picking::Profile) {
+                    self.overlay = None;
+                    self.picking = None;
+                }
+                self.refresh_views();
+            }
+            HarnessEvent::PluginStatus { text, .. } => {
+                self.plugin_status = text;
             }
             HarnessEvent::ModelChanged {
                 model, thinking, ..

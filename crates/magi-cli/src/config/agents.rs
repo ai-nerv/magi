@@ -27,6 +27,15 @@ pub struct Role {
     pub description: Option<String>,
     pub prompt: Option<String>,
     pub model: Option<String>,
+    pub thinking: Option<String>,
+    pub helpers: BTreeMap<String, String>,
+    pub skills_preload: Vec<String>,
+    pub skills_allow: Option<Vec<String>>,
+    pub mode: Option<magi_proto::judging::Mode>,
+    pub allow: Vec<magi_proto::permit::Grant>,
+    pub ask: Vec<magi_proto::permit::Grant>,
+    pub deny: Vec<magi_proto::permit::Grant>,
+    pub tools: magi_tools::ToolFilter,
     pub delegate: bool,
 }
 
@@ -47,11 +56,28 @@ pub fn all(loaded: &Loaded) -> Vec<Role> {
         .iter()
         .filter_map(|(name, value)| {
             let held = value.as_object()?;
+            let mut model = text(held, "model");
+            let mut thinking = text(held, "thinking");
+            let helpers =
+                super::profiles::parse_models(name, held.get("models"), &mut model, &mut thinking);
+            let (skills_preload, skills_allow) = super::profiles::parse_skills(held.get("skills"));
+            let (mode, allow, ask, deny) =
+                super::profiles::parse_permissions(name, held.get("permissions"));
+            let tools = super::profiles::parse_tool_filter(held.get("tools"));
             Some(Role {
                 name: name.clone(),
                 description: text(held, "description"),
-                prompt: text(held, "prompt"),
-                model: text(held, "model"),
+                prompt: super::profiles::parse_prompt(name, held.get("prompt")),
+                model,
+                thinking,
+                helpers,
+                skills_preload,
+                skills_allow,
+                mode,
+                allow,
+                ask,
+                deny,
+                tools,
                 delegate: held
                     .get("delegate")
                     .and_then(serde_json::Value::as_bool)

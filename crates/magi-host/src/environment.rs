@@ -106,6 +106,9 @@ async fn apply(
                 name: backend.model.clone(),
                 context_window: backend.context_window.unwrap_or(0),
             }));
+            if let Some(thinking) = backend.wants.thinking {
+                held.set_thinking(thinking.as_str().to_owned());
+            }
             held.announce_model();
         }
         *boundary = Some(Arc::new(Worker::gated(

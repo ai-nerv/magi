@@ -114,6 +114,56 @@ pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
     out
 }
 
+/// Drop-in `.md` profiles bundled inside installed packages (`<site>/pack/*/start/*/profiles/*.md`).
+#[must_use]
+pub fn pack_profiles(roots: &Roots) -> Vec<PathBuf> {
+    let Some(site) = &roots.site else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for package in packages(&site.join("pack")) {
+        let Ok(entries) = std::fs::read_dir(package.join("profiles")) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    out
+}
+
+/// Skill root directories bundled inside installed packages (`<site>/pack/*/start/*/skills`).
+#[must_use]
+pub fn pack_skill_roots(roots: &Roots) -> Vec<PathBuf> {
+    let Some(site) = &roots.site else {
+        return Vec::new();
+    };
+    packages(&site.join("pack"))
+        .into_iter()
+        .map(|package| package.join("skills"))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+/// All `SKILL.md` files directly under `<skills_root>/<name>/SKILL.md`, sorted.
+#[must_use]
+pub fn skill_files_in(skills_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(skills_root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path().join("SKILL.md"))
+        .filter(|p| p.is_file())
+        .collect();
+    out.sort();
+    out
+}
+
 /// Whether a project directory is one the owner vouched for, by `magi.trusted` in the owner's own
 /// configuration. A directory under a vouched-for one counts. Only an absolute path is a root:
 /// an empty string `starts_with` every path there is. Both sides are resolved where they exist.

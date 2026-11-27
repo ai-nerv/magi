@@ -54,5 +54,11 @@ pub(super) async fn resume(
     helpers.retire();
     drop(transition);
     held.resume_prepared(journal);
+    if held.profile_event().is_some() {
+        held.announce_profile();
+    }
+    if let Some(event) = held.plugin_status_event() {
+        let _ = held.publisher().send(event);
+    }
     Ok(())
 }

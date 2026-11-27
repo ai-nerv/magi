@@ -5,6 +5,30 @@ use magi_proto::ask::Card;
 
 pub mod setup;
 
+/// Clamp a requested thinking level down to the closest level the model supports.
+#[must_use]
+pub fn clamp_thinking(
+    requested: magi_model::ThinkingLevel,
+    supported: &[magi_model::ThinkingLevel],
+) -> magi_model::ThinkingLevel {
+    use magi_model::ThinkingLevel;
+    if supported.contains(&requested) {
+        return requested;
+    }
+    let idx = ThinkingLevel::ALL
+        .iter()
+        .position(|l| *l == requested)
+        .unwrap_or(0);
+    ThinkingLevel::ALL
+        .get(..idx)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .find(|l| supported.contains(l))
+        .copied()
+        .unwrap_or(ThinkingLevel::Off)
+}
+
 /// The answer a request leaves room for when nothing configured says how long one may be.
 pub(crate) const REPLY: u64 = 32_000;
 
@@ -19,15 +43,23 @@ pub(crate) fn reserved(wanted: Option<u64>, cap: Option<u64>) -> u64 {
 
 /// What the daemon needs to reach a model. Plain data, and sendable: the protocol it names is built
 /// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Backend {
+    /// Config/init scripts containing runtime hooks or inline commands, loaded before `tools`.
+    pub scripts: Vec<(String, String)>,
     pub tools: Vec<(String, String)>,
     pub clients: Vec<(String, String)>,
+    /// Name of the active higher-level profile, if any (exposed to Lua commands and hooks).
+    pub active_profile: Option<String>,
     /// Which program fills the `tools` role, and what this session tells it.
     pub tooling: magi_tools::supplier::Tooling,
     pub cwd: std::path::PathBuf,
     /// Permissions a configuration granted in advance; they go into the ledger at startup.
     pub grants: Vec<magi_proto::permit::Grant>,
+    /// Ephemeral grants supplied by the active profile; never persisted or inherited across switch.
+    pub profile_grants: Vec<magi_proto::permit::Grant>,
+    /// Tool visibility and execution filter for the active profile or agent.
+    pub tool_filter: magi_tools::ToolFilter,
     /// Which models answer typed questions rather than writing, by id. Read from the catalog,
     /// since a helper may run on any of them and a backend carries no cards.
     pub deciders: Vec<String>,
@@ -83,6 +115,8 @@ pub type Spend = std::sync::Arc<std::sync::atomic::AtomicU64>;
 
 #[derive(Debug, Clone)]
 pub struct Catalog {
+    /// Config/init scripts that registered runtime hooks or inline commands.
+    pub scripts: Vec<(String, String)>,
     /// Tool descriptions, as `(name, source)`.
     pub tools: Vec<(String, String)>,
     /// The family's client libraries, as `(name, source)`.
@@ -90,6 +124,8 @@ pub struct Catalog {
     pub cwd: std::path::PathBuf,
     /// Project workflow discovery root, relative to `cwd` or absolute.
     pub workflow_workspace: Option<std::path::PathBuf>,
+    /// Extra acknowledged user skill roots bundled inside installed packs (`site/pack/*/start/*/skills`).
+    pub skill_roots: Vec<std::path::PathBuf>,
     pub cards: Vec<Card>,
     pub wants: magi_proto::ask::Wants,
     pub system: Option<String>,
@@ -117,6 +153,22 @@ pub struct Catalog {
     /// The key this session's transcript is recorded under, when not the session's own: a child
     /// of a run records `run@agent`, or the run's agents overwrite each other.
     pub transcript: Option<String>,
+    /// Base system prompt prior to layering any profile prompt or preloaded skills.
+    pub base_system: Option<String>,
+    /// Base model prior to any profile override (restored when switching to a profile without `model`).
+    pub base_model: Option<String>,
+    /// Configured higher-level profiles (`magi.profiles` + `~/.config/magi/profiles/*.md`).
+    pub profiles: Vec<crate::profiles::Profile>,
+    /// Name of the currently active profile, if any.
+    pub active_profile: Option<String>,
+    /// Active skill allowlist (from active profile or child agent policy).
+    pub skill_allow: Option<Vec<String>>,
+    /// Active tool filter (from active profile or child agent policy).
+    pub tool_filter: magi_tools::ToolFilter,
+    /// Ephemeral grants from the active profile or child agent policy.
+    pub profile_grants: Vec<magi_proto::permit::Grant>,
+    /// Preloaded `(skill_name, body)` pairs attached to the active profile's system prompt.
+    pub preloaded_skills: Vec<(String, String)>,
 }
 
 impl Backend {
@@ -129,7 +181,8 @@ impl Backend {
 }
 
 impl Catalog {
-    pub(crate) fn thinking_levels(&self, name: &str) -> Option<Vec<magi_model::ThinkingLevel>> {
+    #[must_use]
+    pub fn thinking_levels(&self, name: &str) -> Option<Vec<magi_model::ThinkingLevel>> {
         let card = self.find(name)?;
         Some(magi_model::ThinkingLevel::available(
             card.reasons,
@@ -141,6 +194,7 @@ impl Catalog {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            scripts: Vec::new(),
             tools: Vec::new(),
             clients: Vec::new(),
             tooling: magi_tools::supplier::Tooling::default(),
@@ -149,6 +203,7 @@ impl Catalog {
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
             workflow_workspace: None,
+            skill_roots: Vec::new(),
             cards: Vec::new(),
             wants: magi_proto::ask::Wants::default(),
             system: None,
@@ -160,7 +215,74 @@ impl Catalog {
             grants: Vec::new(),
             mode: magi_proto::judging::Mode::default(),
             rules: magi_proto::judging::Rules::default(),
+            base_system: None,
+            base_model: None,
+            profiles: Vec::new(),
+            active_profile: None,
+            skill_allow: None,
+            tool_filter: magi_tools::ToolFilter::All,
+            profile_grants: Vec::new(),
+            preloaded_skills: Vec::new(),
         }
+    }
+
+    /// Look up the currently active profile, if one is set and present in [`Self::profiles`].
+    #[must_use]
+    pub fn active_profile_ref(&self) -> Option<&crate::profiles::Profile> {
+        let name = self.active_profile.as_deref()?;
+        self.profiles.iter().find(|p| p.name == name)
+    }
+
+    /// `(name, summary)` list of all configured profiles for the TUI `:profile` picker.
+    #[must_use]
+    pub fn profile_summaries(&self) -> Vec<(String, String)> {
+        self.profiles
+            .iter()
+            .map(|p| (p.name.clone(), p.summary()))
+            .collect()
+    }
+
+    /// Effective helper model map with active profile overrides layered on top of base helpers.
+    /// An empty value disables a helper role (`models = { memory = false }`).
+    #[must_use]
+    pub fn effective_helpers(&self) -> Helpers {
+        let mut helpers = self.helpers.clone();
+        if let Some(profile) = self.active_profile_ref() {
+            for (role, model) in &profile.helpers {
+                if model.is_empty() {
+                    helpers.roles.remove(role);
+                } else {
+                    helpers.roles.insert(role.clone(), model.clone());
+                }
+            }
+        }
+        helpers
+    }
+
+    /// Effective system prompt with active profile prompt and preloaded skills layered on top.
+    #[must_use]
+    pub fn effective_system(&self) -> Option<String> {
+        let base = self.base_system.as_deref().or(self.system.as_deref());
+        let profile = self.active_profile_ref();
+        if profile.is_none() && self.preloaded_skills.is_empty() {
+            return base.map(ToOwned::to_owned);
+        }
+        crate::profiles::compose_system(base, profile, &self.preloaded_skills)
+    }
+
+    /// Effective tooling configuration with active profile's allowed subagents applied.
+    #[must_use]
+    pub fn effective_tooling(&self) -> magi_tools::supplier::Tooling {
+        let mut tooling = self.tooling.clone();
+        if let Some(profile) = self.active_profile_ref()
+            && let Some(allowed) = &profile.agents
+        {
+            tooling
+                .kinds
+                .retain(|kind| allowed.iter().any(|name| name == &kind.name));
+            tooling.strict_kinds = true;
+        }
+        tooling
     }
 
     /// The backend for a model, by qualified or bare name. `None` when no such model exists, or
@@ -171,16 +293,35 @@ impl Catalog {
         // What is reserved is what is asked for. Left unnamed, a provider generates to its own
         // default and the room held back for the reply describes nothing.
         let mut wants = self.wants.clone();
+        if let Some(profile) = self.active_profile_ref()
+            && let Some(level) = profile.thinking.as_deref()
+            && let Ok(parsed) = serde_json::from_value::<magi_model::ThinkingLevel>(
+                serde_json::Value::String(level.to_owned()),
+            )
+        {
+            let supported =
+                magi_model::ThinkingLevel::available(card.reasons, card.capabilities.as_ref());
+            wants.thinking = Some(clamp_thinking(parsed, &supported));
+        }
         wants.max_tokens_automatic |= wants.max_tokens.is_none();
         wants.max_tokens = Some(reserved(wants.max_tokens, card.max_output));
+        let tool_filter = self.active_profile_ref().map_or_else(
+            || self.tool_filter.clone(),
+            crate::profiles::Profile::effective_tool_filter,
+        );
+        let profile_grants = self
+            .active_profile_ref()
+            .map_or_else(|| self.profile_grants.clone(), |p| p.allow.clone());
         card.ready.then(|| Backend {
+            scripts: self.scripts.clone(),
             tools: self.tools.clone(),
             clients: self.clients.clone(),
+            active_profile: self.active_profile.clone(),
             environ: self.environ.clone(),
             cwd: self.cwd.clone(),
             model: card.id.clone(),
             mind: self.mind.clone(),
-            tooling: self.tooling.clone(),
+            tooling: self.effective_tooling(),
             wants,
             context_window: card.context_window,
             max_output: card.max_output,
@@ -200,17 +341,19 @@ impl Catalog {
                         .and_then(|images| images.resize.clone())
                 })
                 .flatten(),
-            system: self.system.clone(),
+            system: self.effective_system(),
             confine: self.confine,
             isolate: self.isolate,
             grants: self.grants.clone(),
+            profile_grants,
+            tool_filter,
             deciders: self
                 .cards
                 .iter()
                 .filter(|card| card.api == "decisions")
                 .map(|card| card.id.clone())
                 .collect(),
-            helpers: self.helpers.clone(),
+            helpers: self.effective_helpers(),
         })
     }
 

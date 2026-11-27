@@ -47,6 +47,8 @@ mod progress;
 /// A backend that asks `mind` and nothing else.
 fn backend(mind: &Mind) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),
@@ -63,6 +65,8 @@ fn backend(mind: &Mind) -> Backend {
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: std::collections::BTreeMap::new(),
         helpers: Default::default(),
         deciders: Vec::new(),

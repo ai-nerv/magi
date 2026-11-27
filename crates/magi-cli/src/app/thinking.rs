@@ -46,6 +46,56 @@ impl App {
         self.picking = Some(Picking::Thinking);
     }
 
+    pub fn open_profile_picker(&mut self) {
+        if self.view_only {
+            self.refuse_view_only();
+            return;
+        }
+        if self.profiles.is_empty() {
+            self.show_notice(
+                "No profiles configured. Add `magi.profiles` in init.lua or `~/.config/magi/profiles/*.md`."
+                    .to_owned(),
+            );
+            return;
+        }
+        let mut choices: Vec<magi_tui::picker::Choice> = self
+            .profiles
+            .iter()
+            .map(|(name, summary)| magi_tui::picker::Choice {
+                value: name.clone(),
+                detail: summary.clone(),
+                ready: true,
+            })
+            .collect();
+        choices.push(magi_tui::picker::Choice {
+            value: "default".to_owned(),
+            detail: "base session configuration (no active profile)".to_owned(),
+            ready: true,
+        });
+        let current = self.profile.as_deref().unwrap_or("default");
+        self.overlay =
+            Some(magi_tui::picker::Picker::new("Profile", choices, Some(current)).into());
+        self.picking = Some(Picking::Profile);
+    }
+
+    /// The next profile name when cycling (`alt+p` / `:profile next`), wrapping back to `"default"`.
+    #[must_use]
+    pub fn next_profile(&self) -> Option<String> {
+        if self.profiles.is_empty() {
+            return None;
+        }
+        match self.profile.as_deref() {
+            None => self.profiles.first().map(|(n, _)| n.clone()),
+            Some(current) => {
+                let idx = self.profiles.iter().position(|(n, _)| n == current);
+                match idx.and_then(|i| self.profiles.get(i + 1)) {
+                    Some((n, _)) => Some(n.clone()),
+                    None => Some("default".to_owned()),
+                }
+            }
+        }
+    }
+
     pub(super) fn thinking_step(&self, forward: bool, wrap: bool) -> Option<&'static str> {
         let levels = self.thinking_levels();
         let current = levels

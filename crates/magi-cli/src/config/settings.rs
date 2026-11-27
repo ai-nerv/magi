@@ -538,6 +538,7 @@ pub fn tooling(loaded: &Loaded) -> magi_tools::supplier::Tooling {
         configure: configured(loaded, &program),
         program: magi_tools::supplier::located(&program),
         kinds: super::agents::kinds(loaded),
+        strict_kinds: false,
     }
 }
 

@@ -76,6 +76,8 @@ pub enum Sending {
 pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
     watching: crate::watching::Watchers,
+    hooks: crate::hooking::Hooks,
+    filter: crate::ToolFilter,
     /// Deferred tools a `tools` lookup has made available, for the rest of the session.
     unlocked: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
@@ -90,6 +92,16 @@ impl Registry {
     /// was asked for. Several may be added, each told in turn; what they hear is [`Event`].
     pub fn watch(&mut self, watcher: Box<dyn Watch>) {
         self.watching.add(watcher);
+    }
+
+    /// Register a pre/post tool hook around tool execution.
+    pub fn hook(&mut self, hook: Box<dyn crate::hooking::Hook>) {
+        self.hooks.add(hook);
+    }
+
+    /// Restrict which registered tools are visible and callable.
+    pub fn set_filter(&mut self, filter: crate::ToolFilter) {
+        self.filter = filter;
     }
 
     /// The handle the watchers hang off, for whoever else has something to report — the permission
@@ -155,7 +167,10 @@ impl Registry {
         let unlocked = self.unlocked.borrow();
         self.tools
             .values()
-            .filter(|tool| !tool.deferred() || unlocked.contains(tool.name()))
+            .filter(|tool| {
+                self.filter.allows(tool.name())
+                    && (!tool.deferred() || unlocked.contains(tool.name()))
+            })
             .map(|tool| magi_model::Tool {
                 strict: tool.strict(),
                 name: tool.name().to_owned(),
@@ -177,6 +192,9 @@ impl Registry {
         ops: &dyn Ops,
         cancel: &dyn Cancel,
     ) -> Output {
+        if let Some(refused) = self.filter.check(name) {
+            return refused;
+        }
         match self.get(name) {
             Some(tool) => {
                 // Checked here rather than by each tool, because this is where the schema is: a
@@ -191,9 +209,25 @@ impl Registry {
                             ));
                         }
                     };
-                let output = crate::files::presentation(crate::bound::attachments(
+                let arguments = match self.hooks.run_before(name, arguments.clone()) {
+                    Ok(rewritten) if rewritten != arguments => {
+                        match crate::schema::sampled(&rewritten, &tool.parameters(), tool.strict())
+                        {
+                            Ok(checked) => checked,
+                            Err(wrong) => {
+                                return Output::error(format!(
+                                    "{name}: hook rewrote arguments that do not fit:\n{wrong}"
+                                ));
+                            }
+                        }
+                    }
+                    Ok(kept) => kept,
+                    Err(reason) => return Output::error(reason),
+                };
+                let mut output = crate::files::presentation(crate::bound::attachments(
                     tool.run(&arguments, ops, cancel),
                 ));
+                self.hooks.run_after(name, &arguments, &mut output);
                 self.finished(name, &arguments, &output);
                 Output {
                     images: output.images,
@@ -213,14 +247,21 @@ impl Registry {
                     file_delivery: output.file_delivery,
                 }
             }
-            None => {
-                let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
-                Output::error(format!(
-                    "there is no tool called {name:?}. Available: {}",
-                    known.join(", ")
-                ))
-            }
+            None => self.unknown_tool(name),
         }
+    }
+
+    fn unknown_tool(&self, name: &str) -> Output {
+        let known: Vec<&str> = self
+            .tools
+            .keys()
+            .filter(|k| self.filter.allows(k))
+            .map(String::as_str)
+            .collect();
+        Output::error(format!(
+            "there is no tool called {name:?}. Available: {}",
+            known.join(", ")
+        ))
     }
 
     /// Answer a call whose arguments are still the text the model streamed. The entry point a turn
@@ -243,15 +284,11 @@ impl Registry {
     /// What overlaps is the *waiting*, which is [`Registry::finish`].
     #[must_use]
     pub fn prepare(&self, name: &str, arguments: &str, ops: &dyn Ops) -> Prepared {
+        if let Some(refused) = self.filter.check(name) {
+            return Prepared::answered(name, refused);
+        }
         let Some(tool) = self.get(name) else {
-            let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
-            return Prepared::answered(
-                name,
-                Output::error(format!(
-                    "there is no tool called {name:?}. Available: {}",
-                    known.join(", ")
-                )),
-            );
+            return Prepared::answered(name, self.unknown_tool(name));
         };
         let parsed = match crate::repair::arguments(arguments) {
             Ok(parsed) => parsed,
@@ -265,6 +302,23 @@ impl Registry {
                     Output::error(format!("{name}: the arguments do not fit:\n{wrong}")),
                 );
             }
+        };
+        let checked = match self.hooks.run_before(name, checked.clone()) {
+            Ok(rewritten) if rewritten != checked => {
+                match crate::schema::sampled(&rewritten, &tool.parameters(), tool.strict()) {
+                    Ok(valid) => valid,
+                    Err(wrong) => {
+                        return Prepared::answered(
+                            name,
+                            Output::error(format!(
+                                "{name}: hook rewrote arguments that do not fit:\n{wrong}"
+                            )),
+                        );
+                    }
+                }
+            }
+            Ok(kept) => kept,
+            Err(reason) => return Prepared::answered(name, Output::error(reason)),
         };
         let state = match tool.send(&checked, ops) {
             Sending::Sent => State::Sent(checked),
@@ -317,7 +371,8 @@ impl Registry {
                 None => Output::error(format!("{name} is gone")),
             },
         };
-        let output = crate::files::presentation(crate::bound::attachments(output));
+        let mut output = crate::files::presentation(crate::bound::attachments(output));
+        self.hooks.run_after(&name, &ran, &mut output);
         observe(&output);
         self.finished(&name, &ran, &output);
         Output {

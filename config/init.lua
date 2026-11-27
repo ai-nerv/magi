@@ -153,17 +153,63 @@ magi.allow = {
 -- by melchior's depth and breadth limits. Privileged: a project's own file cannot turn it on.
 magi.may_spawn = true
 
+-- Higher-level session profiles: named operating modes you switch between mid-session
+-- (`:profile`, `alt+p`, or `magi --profile <name>`). Each profile bundles its own prompt,
+-- model/thinking/helper overrides, skills (`preload`/`allow`), permission overlay (`mode`,
+-- `allow`, `ask`, `deny`), tool filter (`tools.allow`/`tools.deny`), and which subagents
+-- (`magi.agents`) it may spawn (`agents = {}` disables spawning). Drop-in Markdown profiles
+-- in `~/.config/magi/profiles/*.md` are also discovered automatically.
+--
+-- magi.default_profile = "executor"
+magi.profiles = {
+  planner = {
+    description = "Explores the codebase and writes an implementation plan; edits nothing.",
+    prompt = [[You are in planning mode. Map the codebase, identify constraints and interfaces,
+and write a concrete, step-by-step plan. Do not modify files.]],
+    thinking = "high",
+    permissions = {
+      mode = "ask",
+      deny = { "write" },
+    },
+    tools = { deny = { "write", "edit" } },
+    agents = { "explorer" },
+  },
+  executor = {
+    description = "Implements an approved plan cleanly and verifies builds and tests.",
+    prompt = [[You are in execution mode. Implement the agreed plan with tight, focused edits,
+verify builds and tests, and report what changed and how it was checked.]],
+    permissions = {
+      mode = "edits",
+    },
+    agents = { "explorer", "builder", "reviewer" },
+  },
+  architect = {
+    description = "Deep system design, module boundaries, and tradeoff reviews; edits nothing.",
+    prompt = [[You are an architect. Focus on system boundaries, failure modes, invariants,
+and long-term maintainability. Do not modify files.]],
+    thinking = "max",
+    permissions = {
+      mode = "ask",
+      deny = { "write" },
+    },
+    tools = { deny = { "write", "edit" } },
+    agents = {},
+  },
+}
+
 -- Roles: the kinds of agent a lead can start with `spawn`. Each has a description the lead chooses
--- by, a prompt added to the child's own instructions, and optionally a `model` of its own and
--- `delegate = false` to stop it starting children in turn. `main` is the session nobody started.
--- Any other word is still a valid `role`; it just comes with nothing extra. (`magi.roles` is a
--- different thing: which program fills memory, tools and models.)
+-- by, a prompt added to the child's own instructions, and optionally a `model`, `thinking`,
+-- `skills`, `tools`, `permissions`, and `delegate = false` to stop it starting children in turn.
+-- `main` is the session nobody started. Any other word is still a valid `role`; it just comes
+-- with nothing extra. (`magi.roles` is a different thing: which program fills memory, tools and models.)
 magi.agents = {
   explorer = {
     description = "Reads code and docs to answer a question; changes nothing.",
     prompt = [[You are an explorer. Find things out and report them: read, search, and run
 read-only commands. Do not create, edit or delete files. Report what you found with file paths
 and line numbers, and say plainly what you could not find.]],
+    tools = { deny = { "write", "edit" } },
+    permissions = { deny = { "write" } },
     delegate = false,
   },
   builder = {
@@ -178,6 +224,8 @@ report what you changed and how you checked it.]],
 it was meant to do: correctness, edge cases, tests, and whether it builds. Do not edit files.
 Report each problem with its file, its line and why it is wrong, most serious first, or say that
 you found none.]],
+    tools = { deny = { "write", "edit" } },
+    permissions = { deny = { "write" } },
     delegate = false,
   },
 }

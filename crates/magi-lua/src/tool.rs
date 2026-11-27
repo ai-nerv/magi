@@ -169,7 +169,12 @@ pub fn assemble(
     }
     // The one builtin that reaches the harness — not a tool in casper's sense but magi coordinating
     // its own agent tree — given the environment it starts a child with.
-    magi_tools::builtin::install_spawn(&mut registry, environ, &tooling.kinds);
+    magi_tools::builtin::install_spawn_with(
+        &mut registry,
+        environ,
+        &tooling.kinds,
+        tooling.strict_kinds,
+    );
 
     // A name a config declared for itself is that config's, however far it also travelled.
     let declared: Vec<String> = engine
@@ -195,6 +200,7 @@ pub fn install(
     // Installed once, whether or not anything is watching: wiring it conditionally would mean a
     // config that adds a watcher after startup silently never fires.
     registry.watch(Box::new(LuaWatch::new(Rc::clone(&engine))));
+    registry.hook(Box::new(crate::LuaHook::new(Rc::clone(&engine))));
 
     let declared = engine.borrow_mut().tools();
     for (name, spec) in declared {

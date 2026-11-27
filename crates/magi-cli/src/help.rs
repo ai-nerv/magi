@@ -21,6 +21,7 @@ Project workflows use the launch directory unless `magi.workflow_workspace` sele
 - click a block's `▸` to open just that one — it wraps what a preview cut
 - drag to select; it is copied when you let go
 - `shift+tab` cycle who is asked about what no rule allows: ask, edits, auto
+- `alt+p` cycle configured session profiles (`:profile` to pick one)
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt — `:q` to leave, `:qa` to take everything with it
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank

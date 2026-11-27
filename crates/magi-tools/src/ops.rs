@@ -152,6 +152,15 @@ impl Real {
         })
     }
 
+    fn active_grants(&self) -> Vec<magi_proto::permit::Grant> {
+        self.gate.as_ref().map_or_else(Vec::new, |gate| {
+            gate.ledger
+                .lock()
+                .map(|l| l.active_grants())
+                .unwrap_or_default()
+        })
+    }
+
     /// Ops that refuse anything outside `root`.
     #[must_use]
     pub fn confined(root: PathBuf) -> Self {
@@ -220,7 +229,7 @@ impl Real {
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
         let mut write = Vec::new();
-        for grant in self.grants() {
+        for grant in self.active_grants() {
             if let ("write", Scope::Directory { path }) = (grant.verb.as_str(), &grant.scope) {
                 let dir = PathBuf::from(path);
                 if handed_to_jail(&dir, home.as_deref()) {
@@ -606,6 +615,33 @@ mod reach_tests {
         let session = scratch("climb");
         let ops = Real::confined(session.to_path_buf());
         assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn jail_includes_ephemeral_profile_write_grants_without_leaking_into_held() {
+        let session = scratch("jail-profile");
+        let extra = session.join("out");
+        let profile_grant = magi_proto::permit::Grant {
+            verb: "write".into(),
+            scope: magi_proto::permit::Scope::Directory {
+                path: extra.display().to_string(),
+            },
+        };
+        let ops = Real::gated(
+            session.to_path_buf(),
+            crate::permit::Ledger::with_profile(Vec::new(), vec![profile_grant]),
+            std::sync::Arc::new(crate::approve::DenyAll),
+        )
+        .isolating(true);
+        let jail = ops.jail().expect("jail json");
+        assert!(
+            jail.contains(&extra.display().to_string()),
+            "profile write grant should reach jail: {jail}"
+        );
+        assert!(
+            ops.held().is_empty(),
+            "ephemeral profile grant must not leak into standing held grants"
+        );
     }
 }
 

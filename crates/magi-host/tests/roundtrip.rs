@@ -212,6 +212,8 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
     let session = open_session(1, "");
     let backend = magi_host::turn::Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: Vec::new(),
         clients: Vec::new(),
         tooling: Default::default(),
@@ -228,6 +230,8 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         confine: false,
         isolate: false,
         grants: Vec::new(),
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: std::collections::BTreeMap::new(),
         helpers: Default::default(),
         deciders: Vec::new(),

@@ -70,6 +70,25 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
         ":mode" => Control::Send(UiCommand::SetMode {
             mode: input.split_whitespace().nth(1).unwrap_or("next").to_owned(),
         }),
+        ":profile" | ":profiles" => match input.split_whitespace().nth(1) {
+            None => {
+                app.open_profile_picker();
+                Control::Continue
+            }
+            Some("next") => match app.next_profile() {
+                Some(name) => Control::Send(UiCommand::SetProfile { name }),
+                None => {
+                    app.show_notice(
+                        "No profiles configured. Add `magi.profiles` in init.lua or `~/.config/magi/profiles/*.md`."
+                            .to_owned(),
+                    );
+                    Control::Continue
+                }
+            },
+            Some(name) => Control::Send(UiCommand::SetProfile {
+                name: name.to_owned(),
+            }),
+        },
         // What it shows is the session's, and arrives with every snapshot: opened here.
         ":permission" | ":perm" => {
             app.show_permission();

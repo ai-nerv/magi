@@ -5,7 +5,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc, oneshot}
 
 const COUNT: usize = 256;
 const BYTES: usize = 64 * 1024 * 1024;
-mod listing;
+pub(crate) mod listing;
 use crate::{events::TurnOutcome, session::observing::Trace};
 use listing::{Response, discover, warnings};
 
@@ -117,7 +117,10 @@ impl Preparing {
                         if job.cancel.is_requested() || job.epoch.is_requested() {
                             return Err("workflow catalog preparation was cancelled".into());
                         }
-                        return listing::response(&catalog);
+                        return listing::response(
+                            &catalog,
+                            models.catalog.read().await.skill_allow.as_deref(),
+                        );
                     }
                     let profile = if image_bearing(&job.command) {
                         let workers = worker.read().await;
@@ -352,6 +355,12 @@ async fn resolve(
             Vec::new(),
         ));
     };
+    if !crate::profiles::skill_allowed(catalog.skill_allow.as_deref(), invocation.name) {
+        return Err(format!(
+            "skill {:?} is not allowed by the active profile",
+            invocation.name
+        ));
+    }
     let (client, selected) = discover(catalog, cancel).await?;
     let loaded = selected
         .load(&client, invocation.name, cancel)

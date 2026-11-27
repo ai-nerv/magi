@@ -41,6 +41,8 @@ fn drain(receiver: &Receiver) -> Vec<Event> {
 
 fn backend(mind: &Mind, root: &std::path::Path) -> Backend {
     Backend {
+        scripts: Vec::new(),
+        active_profile: None,
         tools: vec![],
         clients: vec![],
         tooling: Default::default(),
@@ -57,6 +59,8 @@ fn backend(mind: &Mind, root: &std::path::Path) -> Backend {
         confine: false,
         isolate: false,
         grants: vec![],
+        profile_grants: Vec::new(),
+        tool_filter: magi_tools::ToolFilter::All,
         environ: [
             "HOME",
             "XDG_CONFIG_HOME",

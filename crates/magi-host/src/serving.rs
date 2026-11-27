@@ -161,16 +161,24 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     let _drawing = crate::holder::Drawing::attach(&person.surfaces, draws);
 
     // Subscribe before reading state, so an entry committed between the two is not lost in the gap.
-    let (snapshot, backlog, mut live) = {
+    let (snapshot, profile_event, status_event, backlog, mut live) = {
         let session = session.lock().await;
         (
             session.snapshot(from),
+            session.profile_event(),
+            session.plugin_status_event(),
             session.replay(from),
             session.subscribe(),
         )
     };
 
     writer.write(&snapshot).await?;
+    if let Some(event) = profile_event {
+        writer.write(&event).await?;
+    }
+    if let Some(event) = status_event {
+        writer.write(&event).await?;
+    }
     for event in backlog {
         writer.write(&event).await?;
     }
@@ -333,6 +341,13 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                             writer.write(&HarnessEvent::Refused { cursor, message }).await?;
                         }
                     }
+                    Some(UiCommand::SetProfile { name }) => {
+                        let _change = preparing.changing().await;
+                        if let Some(message) = switch_profile(&session, worker, models, person, scribe, &name).await {
+                            let cursor = session.lock().await.cursor();
+                            writer.write(&HarnessEvent::Refused { cursor, message }).await?;
+                        }
+                    }
                     // To the screen that asked, not every screen: a view of notes is one person's.
                     Some(UiCommand::Memory { verb, arg }) => {
                         let _boundary = worker.read().await;
@@ -427,11 +442,21 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     // A screen that fell behind has lost deltas it cannot ask for again, so it is
                     // handed the whole session as it now stands.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let now = {
+                        let (now, profile_event, status_event) = {
                             let held = session.lock().await;
-                            held.snapshot(held.cursor())
+                            (
+                                held.snapshot(held.cursor()),
+                                held.profile_event(),
+                                held.plugin_status_event(),
+                            )
                         };
                         writer.write(&now).await?;
+                        if let Some(event) = profile_event {
+                            writer.write(&event).await?;
+                        }
+                        if let Some(event) = status_event {
+                            writer.write(&event).await?;
+                        }
                     }
                     Err(_) => break,
                 }
