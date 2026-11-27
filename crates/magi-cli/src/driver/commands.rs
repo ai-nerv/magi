@@ -70,7 +70,7 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
         ":mode" => Control::Send(UiCommand::SetMode {
             mode: input.split_whitespace().nth(1).unwrap_or("next").to_owned(),
         }),
-        ":profile" => match input.split_whitespace().nth(1) {
+        ":profile" | ":profiles" => match input.split_whitespace().nth(1) {
             None => {
                 app.open_profile_picker();
                 Control::Continue

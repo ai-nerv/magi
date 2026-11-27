@@ -44,6 +44,10 @@ pub fn all_with_dir(loaded: &Loaded, dir: Option<&Path>) -> Vec<Profile> {
     }
     if let Some(table) = loaded.config.get("profiles").and_then(Value::as_object) {
         for (name, value) in table {
+            if magi_host::profiles::is_reserved_name(name) {
+                eprintln!("magi: skipped `magi.profiles.{name}`: reserved profile name");
+                continue;
+            }
             let Some(held) = value.as_object() else {
                 continue;
             };
@@ -179,7 +183,13 @@ fn expand_tilde(raw: &str) -> PathBuf {
     {
         return PathBuf::from(home).join(rest);
     }
-    PathBuf::from(raw)
+    let path = PathBuf::from(raw);
+    if path.is_relative()
+        && let Some(dir) = super::config_dir()
+    {
+        return dir.join(path);
+    }
+    path
 }
 
 pub(super) fn parse_skills(value: Option<&Value>) -> (Vec<String>, Option<Vec<String>>) {
@@ -251,8 +261,24 @@ pub(super) fn parse_string_list(value: Option<&Value>) -> Vec<String> {
 }
 
 pub(super) fn parse_grant_list(owner: &str, field: &str, value: Option<&Value>) -> Vec<Grant> {
-    let Some(items) = value.and_then(Value::as_array) else {
+    let Some(value) = value else {
         return Vec::new();
+    };
+    let single;
+    let items: &[Value] = match value {
+        Value::Array(items) => items,
+        Value::Object(map) if map.is_empty() => return Vec::new(),
+        other @ (Value::String(_) | Value::Object(_)) => {
+            eprintln!(
+                "magi: {owner:?} permissions.{field} should be a list; wrapping single entry"
+            );
+            single = [other.clone()];
+            &single
+        }
+        other => {
+            eprintln!("magi: {owner:?} permissions.{field} expects a list, got {other} (ignored)");
+            return Vec::new();
+        }
     };
     items
         .iter()

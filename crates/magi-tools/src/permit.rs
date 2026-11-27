@@ -90,6 +90,16 @@ impl Ledger {
         &self.grants
     }
 
+    /// Standing session grants plus ephemeral active-profile grants (for enforcement and jail setup).
+    #[must_use]
+    pub fn active_grants(&self) -> Vec<Grant> {
+        self.grants
+            .iter()
+            .chain(&self.profile_grants)
+            .cloned()
+            .collect()
+    }
+
     /// The widths a person should be offered for this action, narrow first, because the list is
     /// read top to bottom and the safest answer should be under the cursor.
     #[must_use]

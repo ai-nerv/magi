@@ -10,6 +10,12 @@ use std::path::Path;
 
 const FILE_MOST: u64 = 64 * 1024;
 
+/// Names reserved for `:profile` control verbs (`:profile default`, `:profile next`, etc.).
+#[must_use]
+pub fn is_reserved_name(name: &str) -> bool {
+    matches!(name.trim(), "" | "default" | "off" | "none" | "next")
+}
+
 /// One higher-level session profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profile {
@@ -176,7 +182,9 @@ pub fn compose_system(
     (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
-/// Discover drop-in Markdown profiles in `dir` (`<name>.md`), skipping symlinks and oversized files.
+/// Discover drop-in Markdown profiles in `dir` (`<name>.md`). Follows symlinks inside the user's
+/// trusted config directory (e.g. NixOS/Home Manager or Stow dotfiles) while enforcing regular-file
+/// and 64 KiB bounds.
 #[must_use]
 pub fn load_dir(dir: &Path) -> Vec<Profile> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -185,10 +193,10 @@ pub fn load_dir(dir: &Path) -> Vec<Profile> {
     let mut profiles = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        if !meta.file_type().is_file() || meta.len() > FILE_MOST {
+        if !meta.is_file() || meta.len() > FILE_MOST {
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -202,6 +210,13 @@ pub fn load_dir(dir: &Path) -> Vec<Profile> {
         else {
             continue;
         };
+        if is_reserved_name(name) {
+            eprintln!(
+                "magi: skipped profile {}: {name:?} is a reserved profile name",
+                path.display()
+            );
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -216,6 +231,9 @@ pub fn load_dir(dir: &Path) -> Vec<Profile> {
 
 /// Parse a drop-in Markdown profile with bounded YAML-like `---` frontmatter and Markdown prompt body.
 pub fn parse_markdown(name: &str, text: &str) -> Result<Profile, String> {
+    if is_reserved_name(name) {
+        return Err(format!("{name:?} is a reserved profile name"));
+    }
     let mut profile = Profile {
         name: name.to_owned(),
         ..Profile::default()
@@ -247,7 +265,7 @@ pub fn parse_markdown(name: &str, text: &str) -> Result<Profile, String> {
         if let Some(rest) = trimmed.strip_prefix("- ")
             && block_key.is_some()
         {
-            let item = unquote(rest);
+            let item = unquote(strip_comment(rest));
             if !item.is_empty() {
                 block_items.push(item);
             }
@@ -264,7 +282,7 @@ pub fn parse_markdown(name: &str, text: &str) -> Result<Profile, String> {
             return Err(format!("invalid frontmatter line: {trimmed:?}"));
         };
         let key = key.trim();
-        let val = raw_val.trim();
+        let val = strip_comment(raw_val).trim();
         if val.is_empty()
             && matches!(
                 key,
@@ -397,6 +415,22 @@ fn non_empty(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// Strip an unquoted YAML `# ...` trailing comment.
+fn strip_comment(raw: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut prev_space = true;
+    for (idx, ch) in raw.char_indices() {
+        match (quote, ch) {
+            (Some(q), c) if q == c => quote = None,
+            (None, '"' | '\'') => quote = Some(ch),
+            (None, '#') if prev_space => return raw.get(..idx).unwrap_or(raw).trim_end(),
+            _ => {}
+        }
+        prev_space = ch.is_whitespace();
+    }
+    raw
+}
+
 fn parse_list(raw: &str) -> Vec<String> {
     let inner = raw
         .trim()
@@ -406,11 +440,34 @@ fn parse_list(raw: &str) -> Vec<String> {
     if inner.trim().is_empty() {
         return Vec::new();
     }
-    inner
-        .split(',')
-        .map(unquote)
-        .filter(|s| !s.is_empty())
-        .collect()
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in inner.chars() {
+        match (quote, ch) {
+            (Some(q), c) if q == c => {
+                quote = None;
+                current.push(c);
+            }
+            (None, '"' | '\'') => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            (None, ',') => {
+                let item = unquote(&current);
+                if !item.is_empty() {
+                    items.push(item);
+                }
+                current.clear();
+            }
+            (_, c) => current.push(c),
+        }
+    }
+    let item = unquote(&current);
+    if !item.is_empty() {
+        items.push(item);
+    }
+    items
 }
 
 #[cfg(test)]
@@ -533,5 +590,50 @@ Stay read-only.
 
         let bad_grant = parse_markdown("bad", "---\ndeny: [delete_all]\n---\nhi");
         assert!(bad_grant.is_err(), "invalid grant shorthand must fail");
+    }
+
+    #[test]
+    fn markdown_handles_comments_quoted_commas_reserved_names_and_symlinks() {
+        let md = r#"---
+description: "Plan, review, repeat" # inline comment
+mode: ask # read-only
+deny: ["write:/tmp/a,b", "run:rm"] # trailing comment
+---
+Body.
+"#;
+        let parsed = parse_markdown("planner", md).expect("parse with comments and commas");
+        assert_eq!(parsed.description.as_deref(), Some("Plan, review, repeat"));
+        assert_eq!(parsed.mode, Some(Mode::Ask));
+        assert_eq!(
+            parsed.deny,
+            vec![
+                Grant {
+                    verb: "write".into(),
+                    scope: Scope::Directory {
+                        path: "/tmp/a,b".into(),
+                    },
+                },
+                Grant {
+                    verb: "run".into(),
+                    scope: Scope::Program {
+                        program: "rm".into(),
+                    },
+                },
+            ]
+        );
+        for reserved in ["default", "off", "none", "next"] {
+            assert!(parse_markdown(reserved, "---\nmode: ask\n---\nhi").is_err());
+        }
+
+        // NixOS / Home Manager symlinked profile files must load cleanly.
+        let dir = magi_model::scratch::Scratch::new("magi-profiles", "symlinks");
+        let target = dir.join("nix-store-profile.txt");
+        std::fs::write(&target, "---\nmode: edits\n---\nLinked.\n").expect("write target");
+        std::os::unix::fs::symlink(&target, dir.join("linked.md")).expect("symlink");
+        std::os::unix::fs::symlink(&target, dir.join("default.md")).expect("reserved symlink");
+        let loaded = load_dir(&dir);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "linked");
+        assert_eq!(loaded[0].mode, Some(Mode::Edits));
     }
 }

@@ -377,10 +377,23 @@ pub fn catalog_with_profile(
         role_preload = role.skills_preload;
     }
 
+    let tooling = tooling(loaded);
+    for profile in &profiles {
+        if let Some(allowed) = &profile.agents {
+            for agent in allowed {
+                if !tooling.kinds.iter().any(|k| &k.name == agent) {
+                    eprintln!(
+                        "magi: profile {:?} lists unknown agent {:?} in `agents`",
+                        profile.name, agent
+                    );
+                }
+            }
+        }
+    }
     let mut catalog = magi_host::catalog::Catalog {
         mind: mind(loaded),
         memory: memory(loaded),
-        tooling: tooling(loaded),
+        tooling,
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),

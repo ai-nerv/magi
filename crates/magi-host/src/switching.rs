@@ -216,7 +216,11 @@ pub(crate) async fn preload_skills(
         };
         let mut loaded = Vec::new();
         let mut warnings = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
         for name in names {
+            if !seen.insert(name.as_str()) {
+                continue;
+            }
             match selected.load(&client, name, &cancel).await {
                 Ok(doc) => loaded.push((doc.document.name, doc.document.body)),
                 Err(why) => warnings.push(format!("preloaded skill {name:?} skipped: {why}")),
