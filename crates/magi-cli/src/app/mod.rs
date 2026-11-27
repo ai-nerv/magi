@@ -36,9 +36,9 @@ pub struct App {
     pub thinking: String,
     /// Who is asked about what no rule covers, and on what terms, as the session last said.
     pub judging: magi_proto::judging::Judging,
-    /// Currently active higher-level profile name, and available `(name, summary)` profiles.
     pub profile: Option<String>,
     pub profiles: Vec<(String, String)>,
+    pub plugin_status: Option<String>,
     /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
     pub provider: Option<String>,
     /// Which model answered each finished turn, as it was when the turn ended.
@@ -190,6 +190,7 @@ impl App {
             judging: magi_proto::judging::Judging::default(),
             profile: None,
             profiles: Vec::new(),
+            plugin_status: None,
             provider: None,
             turn_models: std::collections::HashMap::new(),
             model_reasons: false,

@@ -124,6 +124,8 @@ pub struct Catalog {
     pub cwd: std::path::PathBuf,
     /// Project workflow discovery root, relative to `cwd` or absolute.
     pub workflow_workspace: Option<std::path::PathBuf>,
+    /// Extra acknowledged user skill roots bundled inside installed packs (`site/pack/*/start/*/skills`).
+    pub skill_roots: Vec<std::path::PathBuf>,
     pub cards: Vec<Card>,
     pub wants: magi_proto::ask::Wants,
     pub system: Option<String>,
@@ -201,6 +203,7 @@ impl Catalog {
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
             workflow_workspace: None,
+            skill_roots: Vec::new(),
             cards: Vec::new(),
             wants: magi_proto::ask::Wants::default(),
             system: None,

@@ -22,6 +22,7 @@ pub struct TurnBefore<'a> {
 pub struct TurnBeforeOut {
     pub system: Vec<String>,
     pub notices: Vec<String>,
+    pub status: Option<Option<String>>,
 }
 
 /// Context passed to `after_turn(ctx)` hooks right after a model turn finishes.
@@ -41,6 +42,7 @@ pub struct TurnAfterOut {
     /// Optional `(prompt, aside)` follow-up turn to continue an autonomous loop.
     pub continue_prompt: Option<(String, String)>,
     pub notices: Vec<String>,
+    pub status: Option<Option<String>>,
 }
 
 /// Whether at least one `magi.hook` entry is registered in this VM.
@@ -74,6 +76,7 @@ pub fn before_turn(engine: &mut Engine, info: &TurnBefore<'_>) -> TurnBeforeOut 
          for k in pairs({HOOKS}) do if type(k) == 'string' then names[#names + 1] = k end end\n\
          table.sort(names)\n\
          local systems, notices = {{}}, {{}}\n\
+         local status = nil\n\
          for _, name in ipairs(names) do\n\
            local spec = {HOOKS}[name]\n\
            if type(spec) == 'table' and type(spec.before_turn) == 'function' then\n\
@@ -81,6 +84,7 @@ pub fn before_turn(engine: &mut Engine, info: &TurnBefore<'_>) -> TurnBeforeOut 
              if ok and type(res) == 'table' then\n\
                if type(res.system) == 'string' and res.system ~= '' then systems[#systems + 1] = res.system end\n\
                if type(res.notice) == 'string' and res.notice ~= '' then notices[#notices + 1] = res.notice end\n\
+               if res.status ~= nil then status = res.status end\n\
              elseif ok and type(res) == 'string' and res ~= '' then\n\
                systems[#systems + 1] = res\n\
              elseif not ok then\n\
@@ -88,12 +92,13 @@ pub fn before_turn(engine: &mut Engine, info: &TurnBefore<'_>) -> TurnBeforeOut 
              end\n\
            end\n\
          end\n\
-         __magi_turn_result = {{ system = systems, notices = notices }}"
+         __magi_turn_result = {{ system = systems, notices = notices, status = status }}"
     );
     if let Err(why) = engine.run_call_budget(&source, "hook_before_turn.lua") {
         return TurnBeforeOut {
             system: Vec::new(),
             notices: vec![format!("before_turn hook stopped: {why}")],
+            status: None,
         };
     }
     let mut raw = serde_json::Value::Null;
@@ -114,9 +119,11 @@ pub fn before_turn(engine: &mut Engine, info: &TurnBefore<'_>) -> TurnBeforeOut 
             })
             .unwrap_or_default()
     };
+    let status = raw.as_object().and_then(crate::commands::parse_status);
     TurnBeforeOut {
         system: strings("system"),
         notices: strings("notices"),
+        status,
     }
 }
 
@@ -143,12 +150,14 @@ pub fn after_turn(engine: &mut Engine, info: &TurnAfter<'_>) -> TurnAfterOut {
          table.sort(names)\n\
          local notices = {{}}\n\
          local cont_prompt, cont_aside = nil, ''\n\
+         local status = nil\n\
          for _, name in ipairs(names) do\n\
            local spec = {HOOKS}[name]\n\
            if type(spec) == 'table' and type(spec.after_turn) == 'function' then\n\
              local ok, res = pcall(spec.after_turn, __magi_turn_ctx)\n\
              if ok and type(res) == 'table' then\n\
                if type(res.notice) == 'string' and res.notice ~= '' then notices[#notices + 1] = res.notice end\n\
+               if res.status ~= nil then status = res.status end\n\
                if cont_prompt == nil and type(res.continue) == 'string' and res.continue ~= '' then\n\
                  cont_prompt = res.continue\n\
                  if type(res.aside) == 'string' then cont_aside = res.aside end\n\
@@ -158,12 +167,13 @@ pub fn after_turn(engine: &mut Engine, info: &TurnAfter<'_>) -> TurnAfterOut {
              end\n\
            end\n\
          end\n\
-         __magi_turn_result = {{ notices = notices, continue = cont_prompt, aside = cont_aside }}"
+         __magi_turn_result = {{ notices = notices, continue = cont_prompt, aside = cont_aside, status = status }}"
     );
     if let Err(why) = engine.run_call_budget(&source, "hook_after_turn.lua") {
         return TurnAfterOut {
             continue_prompt: None,
             notices: vec![format!("after_turn hook stopped: {why}")],
+            status: None,
         };
     }
     let mut raw = serde_json::Value::Null;
@@ -183,6 +193,7 @@ pub fn after_turn(engine: &mut Engine, info: &TurnAfter<'_>) -> TurnAfterOut {
                 .collect()
         })
         .unwrap_or_default();
+    let status = raw.as_object().and_then(crate::commands::parse_status);
     let continue_prompt = if info.cancelled {
         None
     } else {
@@ -203,6 +214,7 @@ pub fn after_turn(engine: &mut Engine, info: &TurnAfter<'_>) -> TurnAfterOut {
     TurnAfterOut {
         continue_prompt,
         notices,
+        status,
     }
 }
 
@@ -513,6 +525,7 @@ mod tests {
         assert!(started.matched && !started.handled);
         assert_eq!(started.prompt, "fix all warnings and run clippy");
         assert!(started.aside.contains("GOAL_COMPLETE"));
+        assert_eq!(started.status, Some(Some("goal 1/12".to_owned())));
 
         let before = before_turn(
             &mut engine,
@@ -554,6 +567,7 @@ mod tests {
         );
         assert!(done.continue_prompt.is_none());
         assert!(done.notices.iter().any(|n| n.contains("Goal achieved")));
+        assert_eq!(done.status, Some(None));
 
         // After finishing, before_turn stops injecting the goal block.
         let idle = before_turn(

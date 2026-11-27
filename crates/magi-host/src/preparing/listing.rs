@@ -39,6 +39,7 @@ pub(crate) async fn discover(
         .or_else(|| env("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
         .ok_or("workflow discovery needs XDG_CONFIG_HOME or HOME")?;
     let roots = Roots::new(&catalog.cwd, catalog.workflow_workspace.as_deref(), &config)
+        .and_then(|roots| roots.with_extra_user_roots(&catalog.skill_roots))
         .map_err(|why| why.to_string())?;
     let client = Client::new(catalog.tooling.clone(), catalog.environ.clone());
     let selected = crate::skills::Catalog::discover(&client, &roots, cancel)

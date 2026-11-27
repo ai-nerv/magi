@@ -177,6 +177,9 @@ async fn handle(
                 let outcome = worker
                     .dispatch_command(Arc::clone(session), text.clone(), aside.clone())
                     .await?;
+                if let Some(next_status) = outcome.status {
+                    session.lock().await.set_plugin_status(next_status);
+                }
                 if !outcome.notices.is_empty() {
                     let held = session.lock().await;
                     let cursor = held.cursor();

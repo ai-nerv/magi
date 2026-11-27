@@ -161,11 +161,12 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     let _drawing = crate::holder::Drawing::attach(&person.surfaces, draws);
 
     // Subscribe before reading state, so an entry committed between the two is not lost in the gap.
-    let (snapshot, profile_event, backlog, mut live) = {
+    let (snapshot, profile_event, status_event, backlog, mut live) = {
         let session = session.lock().await;
         (
             session.snapshot(from),
             session.profile_event(),
+            session.plugin_status_event(),
             session.replay(from),
             session.subscribe(),
         )
@@ -173,6 +174,9 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
 
     writer.write(&snapshot).await?;
     if let Some(event) = profile_event {
+        writer.write(&event).await?;
+    }
+    if let Some(event) = status_event {
         writer.write(&event).await?;
     }
     for event in backlog {
@@ -438,12 +442,19 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     // A screen that fell behind has lost deltas it cannot ask for again, so it is
                     // handed the whole session as it now stands.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let (now, profile_event) = {
+                        let (now, profile_event, status_event) = {
                             let held = session.lock().await;
-                            (held.snapshot(held.cursor()), held.profile_event())
+                            (
+                                held.snapshot(held.cursor()),
+                                held.profile_event(),
+                                held.plugin_status_event(),
+                            )
                         };
                         writer.write(&now).await?;
                         if let Some(event) = profile_event {
+                            writer.write(&event).await?;
+                        }
+                        if let Some(event) = status_event {
                             writer.write(&event).await?;
                         }
                     }

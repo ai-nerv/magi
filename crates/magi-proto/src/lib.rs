@@ -356,6 +356,10 @@ pub enum HarnessEvent {
         #[serde(default)]
         profiles: Vec<(String, String)>,
     },
+    PluginStatus {
+        cursor: Cursor,
+        text: Option<String>,
+    },
     ModelChanged {
         cursor: Cursor,
         model: Option<ModelInfo>,
@@ -453,37 +457,28 @@ pub enum HarnessEvent {
         #[serde(default)]
         slots: Vec<laying::LaidSlot>,
     },
-    /// Transient request accounting and admission outcome.
     RequestAdmitted {
-        /// The whole window, what one request may occupy of it, and what is held back.
         capacity: u64,
         limit: u64,
         reply: u64,
         margin: u64,
-        /// The complete input: instructions, declarations and every message.
         counted: u64,
-        /// `estimated` or `verified`.
         counting: String,
-        /// `admitted`, `replanned`, `refused` or `blocked`, and why when it was not admitted.
         outcome: String,
         #[serde(default)]
         why: String,
     },
-    /// Provider-neutral frame changes before an ask; neither cache hits nor durable history.
     CacheFrame {
         reasons: Vec<caching::Invalidation>,
     },
-    /// Provider serialization observations; no policy fingerprints or request contents.
     ProviderFrame {
         reasons: Vec<caching::Invalidation>,
     },
-    /// What one helper-model job cost, for the cost view. Not part of the log.
     HelperSpent {
         role: String,
         model: String,
         usage: Usage,
     },
-    /// A user-facing notice outside conversation history and model context.
     Noticed {
         cursor: Cursor,
         text: String,
@@ -543,6 +538,7 @@ impl HarnessEvent {
             | Self::ModelChanged { cursor, .. }
             | Self::ModeChanged { cursor, .. }
             | Self::ProfileChanged { cursor, .. }
+            | Self::PluginStatus { cursor, .. }
             | Self::Branched { cursor, .. }
             | Self::Noticed { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,

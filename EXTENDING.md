@@ -17,6 +17,10 @@ override something you did not write.
 ~/.config/<program>/after/plugin/yours.lua                     the last word
 ```
 
+For `magi`, an installed package under `~/.local/share/magi/site/pack/*/start/*/` may also bundle
+`profiles/*.md` and `skills/<name>/SKILL.md` alongside `plugin/*.lua`. All three are hashed and
+gated by `magi acknowledge`, and load beneath your own `~/.config/magi/` files so local overrides win.
+
 `<program>` is `magi`, `casper`, `melchior` or `balthasar`. Make the directory if it is not
 there. Nothing else needs telling: there is no registration and no entry point to edit.
 
@@ -172,10 +176,10 @@ magi.hook("name", {
     …
   end,
   before_turn = function(ctx)            -- ctx = { model, profile, iteration, prompt }
-    return { system = "extra prompt", notice = "optional notice" }
+    return { system = "extra prompt", notice = "optional notice", status = "tag" }
   end,
   after_turn = function(ctx)             -- ctx = { model, profile, iteration, text, ok, cancelled }
-    return { continue = "follow-up prompt", aside = "…", notice = "…" }
+    return { continue = "follow-up prompt", aside = "…", notice = "…", status = false }
   end,
 })
 ```
@@ -190,6 +194,7 @@ magi.command("goal", {
       prompt = ctx.cleaned,              -- optional rewritten prompt (defaults to ctx.cleaned)
       aside = "…",                       -- optional turn instructions beside the prompt
       notice = "…",                      -- optional UI notice
+      status = "goal 1/12",              -- optional footer status pill (string sets, false/"" clears)
       handled = false,                   -- true handles locally without calling the model
     }
   end,

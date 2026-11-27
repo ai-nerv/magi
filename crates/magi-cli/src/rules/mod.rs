@@ -73,10 +73,17 @@ pub fn compile_project(root: &Path) -> Report {
     report
 }
 
+fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|base| base.join("magi"))
+}
+
 /// Load applied rules for `cwd` from `$XDG_CONFIG_HOME/magi/rules/`, if any exist.
 #[must_use]
 pub fn load_applied(cwd: &Path) -> Applied {
-    let Some(dir) = crate::config::config_dir() else {
+    let Some(dir) = config_dir() else {
         return Applied::default();
     };
     load_applied_in(&dir, cwd)
@@ -92,7 +99,7 @@ fn load_applied_in(config_dir: &Path, cwd: &Path) -> Applied {
 
 /// Save `report`'s compiled grants for `cwd` in the user's configuration directory.
 pub fn save_applied(cwd: &Path, report: &Report) -> std::io::Result<PathBuf> {
-    let dir = crate::config::config_dir().ok_or_else(|| {
+    let dir = config_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no configuration directory available for rules",
@@ -128,7 +135,7 @@ fn save_applied_in(config_dir: &Path, cwd: &Path, report: &Report) -> std::io::R
 
 /// Remove applied rules for `cwd`, returning true if a file was removed.
 pub fn clear_applied(cwd: &Path) -> std::io::Result<bool> {
-    let Some(dir) = crate::config::config_dir() else {
+    let Some(dir) = config_dir() else {
         return Ok(false);
     };
     clear_applied_in(&dir, cwd)

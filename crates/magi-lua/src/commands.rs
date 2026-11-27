@@ -33,6 +33,26 @@ pub struct Outcome {
     pub prompt: String,
     pub aside: String,
     pub notices: Vec<String>,
+    /// Optional footer status pill update (`Some(Some(s))` sets, `Some(None)` clears).
+    pub status: Option<Option<String>>,
+}
+
+/// Parse an optional `status` field from a Lua hook/command return object.
+pub(crate) fn parse_status(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Option<String>> {
+    match obj.get("status")? {
+        serde_json::Value::Bool(false) => Some(None),
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Some(None)
+            } else {
+                Some(Some(trimmed.chars().take(40).collect()))
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Install `magi.command(name, spec)` onto the `magi` global table.
@@ -186,6 +206,7 @@ pub fn dispatch(engine: &mut Engine, req: &Request<'_>) -> Outcome {
             prompt: req.prompt.to_owned(),
             aside: req.aside.to_owned(),
             notices: Vec::new(),
+            status: None,
         };
     }
     let initial = scan(req.prompt, &known);
@@ -196,12 +217,14 @@ pub fn dispatch(engine: &mut Engine, req: &Request<'_>) -> Outcome {
             prompt: req.prompt.to_owned(),
             aside: req.aside.to_owned(),
             notices: Vec::new(),
+            status: None,
         };
     }
 
     let mut prompt = req.prompt.to_owned();
     let mut aside = req.aside.to_owned();
     let mut notices = Vec::new();
+    let mut status = None;
     let mut handled = false;
     let mut ran: BTreeSet<String> = BTreeSet::new();
 
@@ -230,6 +253,9 @@ pub fn dispatch(engine: &mut Engine, req: &Request<'_>) -> Outcome {
         });
         let result = call_one(engine, &hit.name, &payload);
         if let Some(res) = result.as_object() {
+            if let Some(next_status) = parse_status(res) {
+                status = Some(next_status);
+            }
             if let Some(notice) = res
                 .get("notice")
                 .and_then(serde_json::Value::as_str)
@@ -269,6 +295,7 @@ pub fn dispatch(engine: &mut Engine, req: &Request<'_>) -> Outcome {
         prompt,
         aside,
         notices,
+        status,
     }
 }
 

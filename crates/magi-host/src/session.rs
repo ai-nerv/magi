@@ -65,10 +65,9 @@ pub struct Session {
     /// Who is asked about what no rule covers, and on what terms; the gate keeps its own copy of
     /// what it acts on, and this is what every screen is shown.
     pub judging: magi_proto::judging::Judging,
-    /// Currently active higher-level profile name, and available `(name, summary)` choices.
     profile: Option<String>,
     profiles: Vec<(String, String)>,
-    /// Base model chosen outside any profile, restored when switching to a profile without `model`.
+    plugin_status: Option<String>,
     base_model: Option<String>,
 }
 
@@ -118,6 +117,7 @@ impl Session {
             judging: magi_proto::judging::Judging::default(),
             profile: None,
             profiles: Vec::new(),
+            plugin_status: None,
             base_model: None,
         }
     }
@@ -544,47 +544,6 @@ impl Session {
         });
     }
 
-    pub fn set_profiles(&mut self, profiles: Vec<(String, String)>) {
-        self.profiles = profiles;
-    }
-
-    pub fn set_profile(&mut self, profile: Option<String>) {
-        self.profile = profile;
-    }
-
-    pub fn set_base_model(&mut self, model: Option<String>) {
-        self.base_model = model;
-    }
-
-    #[must_use]
-    pub fn base_model(&self) -> Option<String> {
-        self.base_model.clone()
-    }
-
-    #[must_use]
-    pub fn profile(&self) -> Option<&str> {
-        self.profile.as_deref()
-    }
-
-    #[must_use]
-    pub fn profile_event(&self) -> Option<HarnessEvent> {
-        (!self.profiles.is_empty() || self.profile.is_some()).then(|| {
-            HarnessEvent::ProfileChanged {
-                cursor: self.cursor(),
-                profile: self.profile.clone(),
-                profiles: self.profiles.clone(),
-            }
-        })
-    }
-
-    pub fn announce_profile(&self) {
-        let _ = self.events.send(HarnessEvent::ProfileChanged {
-            cursor: self.cursor(),
-            profile: self.profile.clone(),
-            profiles: self.profiles.clone(),
-        });
-    }
-
     /// Change what the agent is doing and tell everyone. Status is not journalled: a session
     /// restored tomorrow is idle whatever it was doing when the process died.
     pub fn set_status(&mut self, status: AgentStatus) {
@@ -780,6 +739,8 @@ pub fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
         }
     }
 }
+
+mod profile;
 
 #[cfg(test)]
 mod tests;

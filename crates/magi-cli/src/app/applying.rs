@@ -65,6 +65,7 @@ impl App {
                 self.clear_workflows();
                 self.profile = None;
                 self.profiles.clear();
+                self.plugin_status = None;
                 if self.picking == Some(Picking::Profile) {
                     self.overlay = None;
                     self.picking = None;
@@ -278,6 +279,9 @@ impl App {
                     self.picking = None;
                 }
                 self.refresh_views();
+            }
+            HarnessEvent::PluginStatus { text, .. } => {
+                self.plugin_status = text;
             }
             HarnessEvent::ModelChanged {
                 model, thinking, ..

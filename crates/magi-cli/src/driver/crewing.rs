@@ -118,6 +118,9 @@ fn moded(app: &App, model: String) -> String {
     if let Some(profile) = &app.profile {
         label = format!("{label} · {profile}");
     }
+    if let Some(status) = app.plugin_status.as_deref().filter(|s| !s.is_empty()) {
+        label = format!("{label} · {status}");
+    }
     match app.judging.mode {
         magi_proto::judging::Mode::Ask => label,
         mode => format!("{label} · {}", mode.name()),

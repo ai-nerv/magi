@@ -372,6 +372,9 @@ async fn run_turn_with_hooks(
             },
         );
         emit_notices(session, before_out.notices).await;
+        if let Some(next_status) = before_out.status {
+            session.lock().await.set_plugin_status(next_status);
+        }
 
         let mut turn_backend = backend.clone();
         if !before_out.system.is_empty() {
@@ -419,6 +422,9 @@ async fn run_turn_with_hooks(
             },
         );
         emit_notices(session, after_out.notices).await;
+        if let Some(next_status) = after_out.status {
+            session.lock().await.set_plugin_status(next_status);
+        }
 
         if outcome.is_err() || cancelled {
             return outcome;

@@ -26,17 +26,46 @@ pub fn default_name(loaded: &Loaded) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// All configured profiles, merging `~/.config/magi/profiles/*.md` underneath `magi.profiles`.
+/// All configured profiles, merging acknowledged pack profiles < `~/.config/magi/profiles/*.md`
+/// < `magi.profiles` in `init.lua`.
 #[must_use]
 pub fn all(loaded: &Loaded) -> Vec<Profile> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let roots = magi_lua::plugins::Roots::discovered(&cwd);
+    let pack_files = super::discovered::acknowledged_pack_profiles(&roots);
     let dir = super::config_dir().map(|d| d.join("profiles"));
-    all_with_dir(loaded, dir.as_deref())
+    all_with_packs(loaded, &pack_files, dir.as_deref())
 }
 
 /// Same as [`all`], with an explicit drop-in directory (used by tests).
+#[cfg(test)]
 #[must_use]
 pub fn all_with_dir(loaded: &Loaded, dir: Option<&Path>) -> Vec<Profile> {
+    all_with_packs(loaded, &[], dir)
+}
+
+/// Same as [`all`], with explicit pack `.md` files and user drop-in directory.
+#[must_use]
+pub fn all_with_packs(loaded: &Loaded, pack_files: &[PathBuf], dir: Option<&Path>) -> Vec<Profile> {
     let mut merged: BTreeMap<String, Profile> = BTreeMap::new();
+    for path in pack_files {
+        let Some(name) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        if let Ok(text) = std::fs::read_to_string(path) {
+            match magi_host::profiles::parse_markdown(name, &text) {
+                Ok(profile) => {
+                    merged.insert(profile.name.clone(), profile);
+                }
+                Err(why) => eprintln!("magi: skipped pack profile {}: {why}", path.display()),
+            }
+        }
+    }
     if let Some(dir) = dir {
         for profile in load_dir(dir) {
             merged.insert(profile.name.clone(), profile);

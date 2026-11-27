@@ -67,6 +67,7 @@ impl App {
         self.choices.clear();
         self.profile = None;
         self.profiles.clear();
+        self.plugin_status = None;
         self.clear_workflows();
         self.set_status(magi_proto::AgentStatus::Idle);
         self.selection = None;

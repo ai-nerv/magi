@@ -145,6 +145,7 @@ impl Recording {
                 | HarnessEvent::ModelChanged { .. }
                 | HarnessEvent::ModeChanged { .. }
                 | HarnessEvent::ProfileChanged { .. }
+                | HarnessEvent::PluginStatus { .. }
                 | HarnessEvent::ContextLaid { .. }
                 | HarnessEvent::RequestAdmitted { .. }
                 | HarnessEvent::CacheFrame { .. }

@@ -416,6 +416,9 @@ pub fn catalog_with_profile(
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
         workflow_workspace: loaded.config.string("workflow_workspace").map(Into::into),
+        skill_roots: discovered::acknowledged_pack_skill_roots(
+            &magi_lua::plugins::Roots::discovered(&std::env::current_dir().unwrap_or_default()),
+        ),
         cards,
         wants,
         system: base_system.clone(),
@@ -700,23 +703,6 @@ mod pinning_tests {
             magi_tools::supplier::located("magi-no-such-tool"),
             "magi-no-such-tool"
         );
-    }
-}
-
-#[cfg(test)]
-mod mind_tests {
-    use super::*;
-    use magi_lua::Engine;
-
-    fn from(source: &str) -> Loaded {
-        let mut engine = Engine::new();
-        engine.run(source, "test").expect("config");
-        engine.harvest();
-        Loaded {
-            config: engine.config(),
-            tools: Vec::new(),
-            clients: Vec::new(),
-        }
     }
 
     #[test]
